@@ -396,7 +396,7 @@ def _write_reading_guide(ws, row: int, merge_end: int) -> int:
         "\n",
         TextBlock(
             callout_font,
-            "JA: trust CER over WER/WCMR — morpheme-spaced reference vs unsegmented Qwen "
+            "JA: trust CER over WER/WCMR"
             "output inflates word-count metrics.",
         ),
         "\n",
