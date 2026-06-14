@@ -1,0 +1,41 @@
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+
+# --- Conversation data & pipeline outputs ---
+# Annotations, audio, and every file produced by the workflow scripts.
+Conversations/
+
+# --- Generated reports ---
+reports/
+*.xlsx
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- Environment / secrets ---
+.env
+.env.*
+*.local
+
+# --- ML model caches (if downloaded into the project tree) ---
+.cache/
+models/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
