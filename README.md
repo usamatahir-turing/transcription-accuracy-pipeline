@@ -12,7 +12,7 @@ The evaluation is **segment-level**. Each speech segment defined in `SPK*.seglst
 2. **Hypothesis** — Qwen3-ASR transcription of the same audio slice (`SPK*.wav`, cut to the segment's start/end time).
 3. **Normalization (both sides, same rules)** — two stages applied to both reference and hypothesis:
    - **Whisper `BasicTextNormalizer`** — lowercase, NFKC, strip punctuation/brackets. This **removes NSV tags** (e.g. `[laugh]`, `[breath]`, `[inhale]`) from the text used for scoring; diacritics are preserved.
-   - **Filler/backchannel stripping** — language-specific lists in `fillers_by_lang.json` remove hesitation and backchannel tokens (safe fillers always; ambiguous fillers only when the segment would otherwise be non-content).
+   - **Filler/backchannel stripping** — ``filler_removal.py`` removes pure hesitation vocalizations and backchannels (discourse markers like *genau*, *tipo*, *そうですね* are kept).
    
    Segments where the **reference** has no real speech left after normalization (NSV-only, empty, filler-only, or backchannel-only) are marked `scored: false` and excluded from metrics.
 4. **Scoring** — on all `scored` segments, micro-averaged via `jiwer`:
@@ -147,7 +147,7 @@ Uses `float16` on Turing GPUs (e.g. RTX 2070). Requires network on first run to 
 Both sides go through the **same normalization track**:
 
 1. **Whisper `BasicTextNormalizer`** on the raw text — lowercases, NFKC, strips punctuation and bracketed tokens. Well-formed **NSV tags** (`[laugh]`, `[breath]`, `[inhale]`, etc.) are removed here (they are not counted as words in WER/CER/WCMR). The original raw text is kept in the `text` field; the cleaned string is in `text_norm`.
-2. **Filler/backchannel stripping** from `fillers_by_lang.json` (sourced from `guidelines_for_languages/`) — safe hesitation/backchannel tokens are always removed; ambiguous tokens are kept unless the segment would be filler/backchannel-only (default `drop-if-alone` policy).
+2. **Filler/backchannel stripping** via ``filler_removal.py`` — removes pure hesitation/backchannel vocalizations; segments whose reference is empty after this step are marked `scored: false` (`drop_reason: filler_only`).
 
 Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference is NSV-only, normalization leaves nothing to score → `drop_reason: "empty"`, `scored: false`. Scoring eligibility is decided from the **reference** only, so the two files stay row-aligned.
 
@@ -159,9 +159,6 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 .\.venv\Scripts\python.exe normalize_transcripts.py --batch delivery_batch_06092026
 
 .\.venv\Scripts\python.exe normalize_transcripts.py --conversation NV-AR-SS03-CONVO09 --file SPK01
-
-# optional: how to handle ambiguous fillers (default: drop-if-alone)
-.\.venv\Scripts\python.exe normalize_transcripts.py --ambiguous-mode keep
 ```
 
 ---
@@ -234,8 +231,8 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 | File | Role |
 |------|------|
 | `workflow_common.py` | Shared `--batch` / `--conversation` / `--file` argument parsing and file discovery |
-| `fillers_by_lang.json` | Language-specific filler/backchannel lists for normalization |
-| `guidelines_for_languages/` | Source transcription guidelines (used to build filler lists) |
+| `filler_removal.py` | Language-specific filler/backchannel removal for normalization |
+| `guidelines_for_languages/` | Source transcription guidelines (reference for annotation rules) |
 | `requirements.txt` | Python dependencies |
 | `test_imports.py` | Environment smoke test |
 | `Sample_review_report_06042026.md` | Reference methodology and baseline context |

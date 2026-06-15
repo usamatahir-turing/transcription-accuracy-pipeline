@@ -8,7 +8,7 @@ For each scored segment, computes per-segment error counts with jiwer and
 writes the top-N segments to ``SPK*_top_errors.json`` in the conversation folder.
 
 Ranking key (absolute errors = substitutions + deletions + insertions):
-  - Japanese (JA): character errors on whitespace-stripped text (CER).
+  - Japanese (JA) and Korean (KO): character errors on whitespace-stripped text (CER).
   - All other languages: word errors on whitespace .split() tokens (WER).
 
 This matches the micro-averaging definitions in compute_metrics.py — segments
@@ -33,8 +33,8 @@ import jiwer
 
 from workflow_common import add_scope_args, resolve_speaker_files
 
-# Same language choice as compute_metrics.py — CER is the meaningful rank for JA.
-CER_PRIMARY = {"JA"}
+# CER is the meaningful rank metric for JA/KO (matches client methodology).
+CER_PRIMARY = {"JA", "KO"}
 
 
 def read_jsonl(path: Path) -> list[dict]:

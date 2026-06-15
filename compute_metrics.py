@@ -173,12 +173,19 @@ def process_conversation(session_dir: Path) -> dict | None:
         "session_id": session_dir.name,
         "language": language,
         "method": {
-            "wer_tokenization": "whitespace .split()",
+            "wer_tokenization": (
+                "whitespace .split() on char-spaced text (JA no-space language)"
+                if language in CER_PRIMARY
+                else "whitespace .split()"
+            ),
             "cer_whitespace_stripped": True,
             "averaging": "micro",
-            "note": ("For JA/KO, CER is the primary metric; WER/WCMR are "
-                     "whole-segment artifacts due to word-spacing conventions."
-                     if language in CER_PRIMARY else ""),
+            "note": (
+                "JA: text_norm is char-spaced after normalization (matches client "
+                "wer_scoring_repr); WER and CER are equivalent. CER is the governing metric."
+                if language in CER_PRIMARY
+                else ""
+            ),
         },
         "total": compute_block(all_pairs, all_total),
         "speakers": speakers,

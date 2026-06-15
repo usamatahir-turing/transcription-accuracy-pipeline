@@ -6,7 +6,7 @@ env/
 # --- Conversation data & pipeline outputs ---
 # Annotations, audio, and every file produced by the workflow scripts.
 Conversations/
-
+chsep_audio_qa/
 # --- Generated reports ---
 reports/
 *.xlsx
