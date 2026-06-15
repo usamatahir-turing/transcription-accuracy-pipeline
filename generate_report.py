@@ -5,6 +5,8 @@ Reads ``Conversations/<batch>/<conversation>/metrics.json`` and writes one
 
   - one worksheet per batch (per-conversation + by-language summary)
   - a final **All Batches** worksheet combining every batch
+  - a **top_erroneous_segments** worksheet (worst segments per speaker from
+    ``SPK*_top_errors.json``, produced by ``rank_error_segments.py``)
   - a **Definitions** worksheet explaining each metric column
   - a **Reference** worksheet with baseline reference numbers
 
@@ -39,7 +41,7 @@ from workflow_common import add_scope_args, resolve_conversation_dirs
 # Baseline reference numbers (independent vendor corpus, identical pipeline).
 REFERENCE = {
     "AR": {"wer": 47.04, "cer": 20.28, "wcmr": 63.22, "gt3_pct": 28.49},
-    "DE": {"wer": 15.62, "cer": 10.24, "wcmr": 38.92, "gt3_pct": 9.57},
+    "GR": {"wer": 15.62, "cer": 10.24, "wcmr": 38.92, "gt3_pct": 9.57},
     "EN": {"wer": 8.51, "cer": 6.40, "wcmr": 28.22, "gt3_pct": 3.33},
     "ES": {"wer": 14.37, "cer": 10.73, "wcmr": 36.01, "gt3_pct": 6.50},
     "FR": {"wer": 17.20, "cer": 12.97, "wcmr": 51.12, "gt3_pct": 25.78},
@@ -94,8 +96,37 @@ REF_HEADERS = [
     ("|m-n|>3 %", "gt3_pct", "0.00", False),
 ]
 
+TOP_ERRORS_HEADERS = [
+    ("Batch", "batch", None, False),
+    ("Conversation", "session_id", None, False),
+    ("Speaker", "speaker", None, False),
+    ("Language", "language", None, False),
+    ("Rank metric", "rank_metric", None, False),
+    ("Rank", "rank", "#,##0", False),
+    ("Idx", "idx", "#,##0", False),
+    ("Start (s)", "start", "0.00", False),
+    ("End (s)", "end", "0.00", False),
+    ("Ref units", "ref_units", "#,##0", False),
+    ("Hyp units", "hyp_units", "#,##0", False),
+    ("Errors", "errors", "#,##0", False),
+    ("Error rate %", "error_rate_pct", "0.00", False),
+    ("Substitutions", "substitutions", "#,##0", False),
+    ("Deletions", "deletions", "#,##0", False),
+    ("Insertions", "insertions", "#,##0", False),
+    ("Ref (norm)", "ref_norm", None, False),
+    ("Hyp (norm)", "hyp_norm", None, False),
+    ("Ref (raw)", "ref_raw", None, False),
+    ("Hyp (raw)", "hyp_raw", None, False),
+]
+
+TOP_ERRORS_TEXT_KEYS = {
+    "batch", "session_id", "speaker", "language", "rank_metric",
+    "ref_norm", "hyp_norm", "ref_raw", "hyp_raw",
+}
+TOP_ERRORS_WRAP_KEYS = {"ref_norm", "hyp_norm", "ref_raw", "hyp_raw"}
+
 REF_N_SCORED = {
-    "AR": 2352, "DE": 2058, "EN": 3157, "ES": 2799, "FR": 3224,
+    "AR": 2352, "GR": 2058, "EN": 3157, "ES": 2799, "FR": 3224,
     "IT": 2231, "JA": 5290, "KO": 4336, "PT": 3931, "RU": 3037, "ALL": 32415,
 }
 
@@ -153,6 +184,42 @@ METRIC_DEFINITIONS = [
         "Δ >3",
         "Human-annotated transcript |m-n|>3 % minus the baseline reference value "
         "for that language (percentage points). Negative = better than baseline.",
+    ),
+]
+
+TOP_ERRORS_DEFINITIONS = [
+    (
+        "Rank metric",
+        "How segments were ranked within each speaker file: cer for Japanese "
+        "(character errors), wer for all other languages (word errors).",
+    ),
+    (
+        "Rank",
+        "1 = worst segment for that speaker (highest absolute error count).",
+    ),
+    (
+        "Ref / Hyp units",
+        "Reference and hypothesis unit counts for that segment (words, or "
+        "characters for Japanese).",
+    ),
+    (
+        "Errors",
+        "Substitutions + deletions + insertions for that segment (S + D + I).",
+    ),
+    (
+        "Error rate %",
+        "Segment-level error rate: errors ÷ ref units × 100. Can exceed 100% "
+        "when insertions dominate (e.g. vocalized Arabic Qwen output).",
+    ),
+    (
+        "Ref / Hyp (norm)",
+        "Normalized text used for scoring (after BasicTextNormalizer and "
+        "filler stripping).",
+    ),
+    (
+        "Ref / Hyp (raw)",
+        "Original transcript strings before normalization (from the _norm.jsonl "
+        "text field).",
     ),
 ]
 
@@ -269,6 +336,46 @@ def discover_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
     for batch_name in batches:
         batches[batch_name].sort(key=lambda r: r["session_id"])
     return dict(sorted(batches.items()))
+
+
+def discover_top_error_segments(root: Path, batch: str | None) -> list[dict]:
+    """Flatten every ``SPK*_top_errors.json`` in scope into one row per segment."""
+    rows: list[dict] = []
+    for conv_dir in resolve_conversation_dirs(root, batch, None):
+        batch_name = conv_dir.parent.name
+        for path in sorted(conv_dir.glob("SPK*_top_errors.json")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            session_id = data.get("session_id", conv_dir.name)
+            speaker = data.get("speaker", path.stem.replace("_top_errors", ""))
+            language = data.get("language", "")
+            rank_metric = data.get("rank_metric", "")
+            for seg in data.get("segments", []):
+                rows.append({
+                    "batch": batch_name,
+                    "session_id": session_id,
+                    "speaker": speaker,
+                    "language": language,
+                    "rank_metric": rank_metric,
+                    "rank": seg.get("rank"),
+                    "idx": seg.get("idx"),
+                    "start": seg.get("start"),
+                    "end": seg.get("end"),
+                    "ref_units": seg.get("ref_units"),
+                    "hyp_units": seg.get("hyp_units"),
+                    "errors": seg.get("errors"),
+                    "error_rate_pct": seg.get("error_rate_pct"),
+                    "substitutions": seg.get("substitutions"),
+                    "deletions": seg.get("deletions"),
+                    "insertions": seg.get("insertions"),
+                    "ref_norm": seg.get("ref_norm", ""),
+                    "hyp_norm": seg.get("hyp_norm", ""),
+                    "ref_raw": seg.get("ref_raw", ""),
+                    "hyp_raw": seg.get("hyp_raw", ""),
+                })
+    rows.sort(key=lambda r: (
+        r["batch"], r["session_id"], r["speaker"], r.get("rank") or 0,
+    ))
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +589,40 @@ def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
     return start_row + 1 + len(rows)
 
 
+def _write_top_errors_table(ws, start_row: int, headers: list[tuple],
+                            rows: list[dict]) -> int:
+    """Flat table for top erroneous segments; wrap long transcript columns."""
+    for i, (label, _, _, _) in enumerate(headers):
+        cell = ws.cell(row=start_row, column=1 + i, value=label)
+        cell.font = FONT_HEADER
+        cell.fill = FILL_HEADER
+        cell.alignment = ALIGN_CENTER
+        cell.border = BORDER
+
+    wrap = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    for i, record in enumerate(rows):
+        r = start_row + 1 + i
+        is_alt = i % 2 == 1
+        for j, (_, key, fmt, _) in enumerate(headers):
+            col = 1 + j
+            val = record.get(key)
+            cell = ws.cell(row=r, column=col, value=val)
+            cell.border = BORDER
+            cell.font = FONT_BODY
+            if is_alt:
+                cell.fill = FILL_ALT
+            if key in TOP_ERRORS_WRAP_KEYS:
+                cell.alignment = wrap
+            elif key in TOP_ERRORS_TEXT_KEYS:
+                cell.alignment = ALIGN_LEFT
+            else:
+                cell.alignment = ALIGN_RIGHT
+            if fmt and val is not None:
+                cell.number_format = fmt
+
+    return start_row + 1 + len(rows)
+
+
 def _autosize_columns(ws, col_ranges: list[tuple[int, int]],
                       min_width: int = 9, max_width: int = 22) -> None:
     for start, end in col_ranges:
@@ -592,6 +733,51 @@ def write_reference_sheet(ws) -> None:
     _autosize_columns(ws, [(1, n_cols)])
 
 
+def write_top_erroneous_segments_sheet(ws, rows: list[dict], generated: str) -> None:
+    """Worst segments per speaker — sourced from SPK*_top_errors.json."""
+    n_cols = len(TOP_ERRORS_HEADERS)
+    row = _write_title_block(
+        ws,
+        "Top erroneous segments",
+        f"Per-speaker worst segments (rank_error_segments.py)  ·  "
+        f"{len(rows)} row(s)  ·  Generated {generated} UTC",
+        n_cols,
+    )
+    row += 1
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
+    note = ws.cell(
+        row=row, column=1,
+        value=(
+            "Japanese rows ranked by CER (character errors); all other languages "
+            "by WER (word errors). Error rate % can exceed 100 when insertions "
+            "dominate. Use Start/End to locate audio in SPK*.wav."
+        ),
+    )
+    note.font = FONT_LEGEND
+    note.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws.row_dimensions[row].height = 28
+    row += 1
+
+    header_row = row
+    _write_top_errors_table(ws, row, TOP_ERRORS_HEADERS, rows)
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+    col_widths = {
+        "batch": 24,
+        "session_id": 22,
+        "speaker": 8,
+        "language": 8,
+        "rank_metric": 10,
+        "ref_norm": 44,
+        "hyp_norm": 44,
+        "ref_raw": 44,
+        "hyp_raw": 44,
+    }
+    for i, (_, key, _, _) in enumerate(TOP_ERRORS_HEADERS):
+        letter = get_column_letter(1 + i)
+        ws.column_dimensions[letter].width = col_widths.get(key, 11)
+
+
 def write_definitions_sheet(ws) -> None:
     """Glossary of metric columns used in the batch / All Batches tabs."""
     n_cols = 2
@@ -629,10 +815,37 @@ def write_definitions_sheet(ws) -> None:
 
     ws.column_dimensions["A"].width = 14
     ws.column_dimensions["B"].width = 88
-    ws.freeze_panes = ws.cell(row=row + 1, column=1)
+    freeze_row = row + 1
+
+    if TOP_ERRORS_DEFINITIONS:
+        row = row + 1 + len(METRIC_DEFINITIONS) + 1
+        row = _write_section_header(ws, row, "Top erroneous segments tab", n_cols)
+        for col, label in enumerate(("Column", "Definition"), start=1):
+            cell = ws.cell(row=row, column=col, value=label)
+            cell.font = FONT_HEADER
+            cell.fill = FILL_HEADER
+            cell.alignment = ALIGN_CENTER
+            cell.border = BORDER
+        for i, (metric, definition) in enumerate(TOP_ERRORS_DEFINITIONS):
+            r = row + 1 + i
+            m_cell = ws.cell(row=r, column=1, value=metric)
+            m_cell.font = FONT_BODY
+            m_cell.border = BORDER
+            m_cell.alignment = ALIGN_LEFT
+            d_cell = ws.cell(row=r, column=2, value=definition)
+            d_cell.font = FONT_BODY
+            d_cell.border = BORDER
+            d_cell.alignment = wrap
+            if i % 2 == 1:
+                m_cell.fill = FILL_ALT
+                d_cell.fill = FILL_ALT
+            ws.row_dimensions[r].height = 36
+
+    ws.freeze_panes = ws.cell(row=freeze_row, column=1)
 
 
-def build_workbook(batches: dict[str, list[dict]], generated: str) -> Workbook:
+def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
+                   generated: str) -> Workbook:
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -649,6 +862,10 @@ def build_workbook(batches: dict[str, list[dict]], generated: str) -> Workbook:
         all_records.sort(key=lambda r: (r["batch"], r["session_id"]))
         ws_all = wb.create_sheet(title=_safe_sheet_name("All Batches"))
         write_all_batches_sheet(ws_all, all_records, generated)
+
+    if top_error_rows:
+        ws_top = wb.create_sheet(title=_safe_sheet_name("top_erroneous_segments"))
+        write_top_erroneous_segments_sheet(ws_top, top_error_rows, generated)
 
     ws_ref = wb.create_sheet(title=_safe_sheet_name("Reference"))
     write_reference_sheet(ws_ref)
@@ -677,17 +894,23 @@ def main(argv: list[str] | None = None) -> int:
         print("No metrics.json files found in scope.")
         return 1
 
+    top_error_rows = discover_top_error_segments(root, args.batch)
+
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    wb = build_workbook(batches, generated)
+    wb = build_workbook(batches, top_error_rows, generated)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
 
     n_conv = sum(len(v) for v in batches.values())
+    top_note = (
+        f" + top_erroneous_segments ({len(top_error_rows)} row(s))"
+        if top_error_rows else " (no SPK*_top_errors.json found)"
+    )
     print(f"Wrote {out_path.resolve()}")
-    print(f"  Definitions tab + {len(batches)} batch tab(s) + All Batches + Reference  "
-          f"({n_conv} conversation(s)).")
+    print(f"  Definitions tab + {len(batches)} batch tab(s) + All Batches"
+          f"{top_note} + Reference  ({n_conv} conversation(s)).")
     for batch_name, records in batches.items():
         langs = sorted({r["language"] for r in records})
         print(f"    {batch_name}: {len(records)} conversation(s)  [{', '.join(langs)}]")

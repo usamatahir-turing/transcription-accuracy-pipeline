@@ -212,6 +212,7 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 - **Definitions** — column glossary
 - **One tab per batch** — language summary (cols A–K) and per-conversation table (cols M→) side by side
 - **All Batches** — combined view
+- **top_erroneous_segments** — worst segments per speaker (from `SPK*_top_errors.json`; run `rank_error_segments.py` first)
 - **Reference** — baseline reference numbers per language
 
 Δ columns show human-annotated transcript minus baseline (percentage points), color-coded.
