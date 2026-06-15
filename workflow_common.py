@@ -5,7 +5,7 @@ Folder layout:
     Conversations/<batch>/<conversation>/SPK*...
 
 All workflow scripts (transcript_extraction, qwen_asr_transcription,
-normalize_transcripts, compute_metrics) use these helpers so they share the same
+normalize_transcripts, rank_error_segments, compute_metrics) use these helpers so they share the same
 ``--batch`` / ``--conversation`` / ``--file`` / ``--overwrite`` / ``--limit``
 arguments and discovery behavior.
 """

@@ -40,7 +40,8 @@ Conversations/
       SPK01_qwen.jsonl                step 2 output
       SPK01_transcript_norm.jsonl     step 3 output
       SPK01_qwen_norm.jsonl           step 3 output
-      metrics.json                    step 4 output
+      SPK01_top_errors.json           step 4 output (optional review)
+      metrics.json                    step 5 output
 ```
 
 ---
@@ -165,7 +166,28 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 
 ---
 
-### Step 4 — `compute_metrics.py`
+### Step 4 — `rank_error_segments.py` (optional review)
+
+**What it does:** Joins `SPK*_transcript_norm.jsonl` with `SPK*_qwen_norm.jsonl` on scored rows and ranks segments by absolute error count. Writes `SPK*_top_errors.json` per speaker with the worst segments for manual review.
+
+- **Japanese:** ranked by **CER** (character errors, whitespace stripped).
+- **Other languages:** ranked by **WER** (word errors, whitespace `.split()`).
+
+**Run:**
+
+```powershell
+.\.venv\Scripts\python.exe rank_error_segments.py
+
+.\.venv\Scripts\python.exe rank_error_segments.py --conversation NV-JA-SS04-CONVO11
+
+.\.venv\Scripts\python.exe rank_error_segments.py --conversation NV-KO-SS03-CONVO07 --file SPK01
+
+.\.venv\Scripts\python.exe rank_error_segments.py --top 20 --min-ref-units 5 --overwrite
+```
+
+---
+
+### Step 5 — `compute_metrics.py`
 
 **What it does:** Joins normalized reference and hypothesis by `idx`, keeps `scored == true` rows, and computes WER, CER, and WCMR per speaker and per conversation. Writes `metrics.json` into each conversation folder (includes raw error counts for micro-aggregation).
 
@@ -183,7 +205,7 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 
 ---
 
-### Step 5 — `generate_report.py`
+### Step 6 — `generate_report.py`
 
 **What it does:** Reads all `metrics.json` files and builds `reports/transcription_accuracy_metrics.xlsx` with:
 
@@ -225,6 +247,7 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 .\.venv\Scripts\python.exe transcript_extraction.py
 .\.venv\Scripts\python.exe qwen_asr_transcription.py
 .\.venv\Scripts\python.exe normalize_transcripts.py
+.\.venv\Scripts\python.exe rank_error_segments.py
 .\.venv\Scripts\python.exe compute_metrics.py
 .\.venv\Scripts\python.exe generate_report.py
 ```
