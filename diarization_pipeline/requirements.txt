@@ -1,0 +1,11 @@
+# DetER pipeline dependencies (install on top of ../requirements.txt).
+#
+#   pip install -r diarization_pipeline/requirements.txt
+#
+# PyTorch: install a CUDA build matching your driver first if you have a GPU:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#
+# torchaudio is optional — Silero resampling falls back to numpy if missing.
+
+nemo_toolkit[asr]>=2.0
+torchaudio

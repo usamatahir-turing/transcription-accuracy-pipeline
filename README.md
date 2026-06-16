@@ -42,6 +42,30 @@ Conversations/
       SPK01_qwen_norm.jsonl           step 3 output
       SPK01_top_errors.json           step 4 output (optional review)
       metrics.json                    step 5 output
+      SPK01_der.rttm                  DetER speech-only reference (from seglst)
+      SPK01_sad.rttm                  DetER SAD hypothesis (Sortformer ∪ Silero)
+      SPK01_deter.json                DetER per-speaker result
+      deter.json                      DetER conversation rollup
+```
+
+Legacy ``SPK*.rttm`` files (if present) copy every seglst turn including NSV-only
+segments; **do not** use them for DetER. The pipeline writes ``SPK*_der.rttm`` instead.
+
+---
+
+## DetER pipeline (optional)
+
+See [`diarization_pipeline/README.md`](diarization_pipeline/README.md) for the
+full DetER (detection error rate) pipeline: speech-only reference RTTMs,
+configurable SAD hypothesis (`--sad-mode sortformer|silero|union`), and NeMo scoring.
+
+Quick start:
+
+```powershell
+.\.venv\Scripts\pip.exe install -r diarization_pipeline\requirements.txt
+
+python -m diarization_pipeline.deter_calculation --conversation NV-KO-SS03-CONVO08
+python -m diarization_pipeline.deter_calculation --sad-mode sortformer --conversation NV-KO-SS03-CONVO08
 ```
 
 ---
@@ -232,6 +256,7 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 |------|------|
 | `workflow_common.py` | Shared `--batch` / `--conversation` / `--file` argument parsing and file discovery |
 | `filler_removal.py` | Language-specific filler/backchannel removal for normalization |
+| `diarization_pipeline/` | DetER pipeline (seglst ref RTTM, SAD hypothesis, NeMo scoring) |
 | `guidelines_for_languages/` | Source transcription guidelines (reference for annotation rules) |
 | `requirements.txt` | Python dependencies |
 | `test_imports.py` | Environment smoke test |
