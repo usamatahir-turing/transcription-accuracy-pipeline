@@ -45,7 +45,7 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = (
 # Aliases from ISO / folder variants → pipeline code.
 _LANG_ALIASES: dict[str, str] = {
     "EN": "EN", "EN-US": "EN", "EN-GB": "EN", "ENG": "EN",
-    "ES": "ES", "ES-ES": "ES", "ES-MX": "ES", "SPA": "ES",
+    "ES": "ES", "ES-ES": "ES", "ES-MX": "ES", "SPA": "ES", "SP": "ES",
     "FR": "FR", "FR-FR": "FR", "FRA": "FR",
     "GR": "GR", "DE": "GR", "DE-DE": "GR", "DEU": "GR", "GER": "GR",
     "IT": "IT", "IT-IT": "IT", "ITA": "IT",

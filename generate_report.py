@@ -9,6 +9,7 @@ Reads ``Conversations/<batch>/<conversation>/metrics.json`` and writes one
     ``SPK*_top_errors.json``, produced by ``rank_error_segments.py``)
   - a **Definitions** worksheet explaining each metric column
   - a **Reference** worksheet with baseline reference numbers
+  - per-batch **DetER** tables (column Y→) from ``deter.json`` when present
 
 Human-annotated transcript metrics are compared to the independent vendor
 baseline reference. Delta columns show *annotated transcript − baseline* in
@@ -31,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -53,10 +55,23 @@ REFERENCE = {
     "ALL": {"wer": 19.38, "cer": 10.73, "wcmr": 42.42, "gt3_pct": 11.37},
 }
 
-# Side-by-side layout: language summary cols A–K, gap col L, conversations col M→
+# Transcription tables: language summary A–K, gap L, conversations M→ (width varies).
 LANG_COL = 1
 GAP_COL = 12
 CONV_COL = 13
+
+# DetER block starts two columns after the per-conversation table (one gap column).
+# Positions are computed per sheet — see ``_deter_block_cols``.
+
+# Per-channel DetER pass threshold (matches chsep_audio_qa DER_CH_MAX).
+DETER_PASS_THRESHOLD_PCT = 10.0
+
+# Blank columns after the last data column so horizontal scroll has breathing room.
+TRAILING_PAD_COLS = 4
+TRAILING_PAD_WIDTH = 14
+
+# DetER tables reserve up to SPK08 speaker columns (layout scales with batch scope).
+MAX_DETER_SPEAKER_COLS = 8
 
 # Slim tables: core metrics + colored delta columns (vs baseline reference).
 CONV_HEADERS = [
@@ -94,6 +109,11 @@ REF_HEADERS = [
     ("CER %", "cer", "0.00", False),
     ("WCMR %", "wcmr", "0.00", False),
     ("|m-n|>3 %", "gt3_pct", "0.00", False),
+]
+
+REF_DETER_COL = 8
+REF_DETER_HEADERS = [
+    ("DetER pass ≤ %", "deter_pass_max", "0.00", False),
 ]
 
 TOP_ERRORS_HEADERS = [
@@ -185,13 +205,35 @@ METRIC_DEFINITIONS = [
         "Human-annotated transcript |m-n|>3 % minus the baseline reference value "
         "for that language (percentage points). Negative = better than baseline.",
     ),
+    (
+        "DetER % (SPKxx)",
+        "Detection error rate per speaker channel — Sortformer ∪ Silero SAD vs "
+        "speech-only seglst reference (collar 0.25 s). Missed speech + false "
+        "alarm only; no speaker confusion. Lower is better.",
+    ),
+    (
+        "DetER Pass",
+        "Per conversation: PASS when every speaker channel is ≤ 10% DetER "
+        "(DER_CH_MAX); FAIL otherwise.",
+    ),
+    (
+        "Pass (# fail conv.)",
+        "DetER-by-language summary only: FAIL (n) means n conversations in "
+        "that language failed session pass (≥1 channel above 10%). PASS when "
+        "all conversations in the language passed.",
+    ),
+    (
+        "DetER pass ≤ %",
+        "Per-channel DetER pass threshold (DER_CH_MAX) from chsep_audio_qa — "
+        "10% for isolated speaker channels (language-agnostic).",
+    ),
 ]
 
 TOP_ERRORS_DEFINITIONS = [
     (
         "Rank metric",
-        "How segments were ranked within each speaker file: cer for Japanese "
-        "(character errors), wer for all other languages (word errors).",
+        "How segments were ranked within each speaker file: CER for Japanese "
+        "and Korean (character errors), WER for all other languages (word errors).",
     ),
     (
         "Rank",
@@ -200,7 +242,7 @@ TOP_ERRORS_DEFINITIONS = [
     (
         "Ref / Hyp units",
         "Reference and hypothesis unit counts for that segment (words, or "
-        "characters for Japanese).",
+        "characters for Japanese and Korean).",
     ),
     (
         "Errors",
@@ -323,6 +365,133 @@ def language_summary(records: list[dict]) -> list[dict]:
     return rows
 
 
+def derive_language(session_id: str) -> str:
+    """Language code from session name, e.g. NV-KO-SS03-CONVO07 → KO."""
+    parts = session_id.split("-")
+    return parts[1] if len(parts) >= 2 else ""
+
+
+def speaker_columns(records: list[dict]) -> list[str]:
+    """SPK01…SPKnn for DetER tables (contiguous, up to ``MAX_DETER_SPEAKER_COLS``)."""
+    max_n = 0
+    for record in records:
+        for key in record:
+            if key.startswith("SPK") and key[3:].isdigit():
+                max_n = max(max_n, int(key[3:]))
+    if max_n == 0:
+        return []
+    n = min(max_n, MAX_DETER_SPEAKER_COLS)
+    return [f"SPK{i:02d}" for i in range(1, n + 1)]
+
+
+def load_deter(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def deter_to_record(batch: str, data: dict, language: str = "") -> dict:
+    """Flatten ``deter.json`` into a row with one column per speaker channel."""
+    lang = language or derive_language(data.get("session_id", ""))
+    conv = data.get("conversation") or {}
+    speakers = data.get("speakers") or {}
+    record: dict = {
+        "batch": batch,
+        "session_id": data.get("session_id", ""),
+        "language": lang,
+        "deter_pass": conv.get("pass"),
+        "mean_deter_pct": conv.get("mean_deter_pct"),
+    }
+    for spk, info in speakers.items():
+        deter = (info or {}).get("deter") or {}
+        record[spk] = deter.get("error_rate_pct")
+    record["deter_pass_label"] = (
+        "PASS" if record["deter_pass"] else "FAIL"
+        if record["deter_pass"] is not None else "—"
+    )
+    return record
+
+
+def discover_deter_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
+    """Return {batch_name: [DetER rows]} for conversations with deter.json."""
+    batches: dict[str, list[dict]] = defaultdict(list)
+    for conv_dir in resolve_conversation_dirs(root, batch, None):
+        deter_path = conv_dir / "deter.json"
+        if not deter_path.is_file():
+            continue
+        batch_name = conv_dir.parent.name
+        metrics_path = conv_dir / "metrics.json"
+        language = ""
+        if metrics_path.is_file():
+            language = load_metrics(metrics_path).get("language") or ""
+        data = load_deter(deter_path)
+        batches[batch_name].append(
+            deter_to_record(batch_name, data, language=language))
+    for batch_name in batches:
+        batches[batch_name].sort(key=lambda r: r["session_id"])
+    return dict(sorted(batches.items()))
+
+
+def _avg(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def deter_language_summary(
+    records: list[dict], speaker_cols: list[str],
+) -> list[dict]:
+    """Average per-speaker DetER within each language (+ ALL row)."""
+    by_lang: dict[str, list[dict]] = defaultdict(list)
+    for record in records:
+        by_lang[record["language"]].append(record)
+
+    def _summarize(group: list[dict], label: str) -> dict:
+        row: dict = {
+            "language": label,
+            "n_conversations": len(group),
+        }
+        n_fail = sum(1 for r in group if r.get("deter_pass") is False)
+        if n_fail:
+            row["deter_pass_label"] = f"FAIL ({n_fail})"
+        else:
+            row["deter_pass_label"] = "PASS" if group else "—"
+        for spk in speaker_cols:
+            vals = [r[spk] for r in group if r.get(spk) is not None]
+            row[spk] = _avg(vals)
+        return row
+
+    rows = [_summarize(by_lang[lang], lang) for lang in sorted(by_lang)]
+    if rows:
+        rows.append(_summarize(records, "ALL"))
+    return rows
+
+
+def build_deter_lang_headers(speaker_cols: list[str]) -> list[tuple]:
+    headers: list[tuple] = [
+        ("Language", "language", None, False),
+        ("Conv.", "n_conversations", "#,##0", False),
+    ]
+    for spk in speaker_cols:
+        headers.append((spk, spk, "0.00", "deter"))
+    headers.append(("Pass (# fail conv.)", "deter_pass_label", None, False))
+    return headers
+
+
+def build_deter_conv_headers(
+    speaker_cols: list[str], *, include_batch: bool = False,
+) -> list[tuple]:
+    headers: list[tuple] = []
+    if include_batch:
+        headers.append(("Batch", "batch", None, False))
+    headers += [
+        ("Conversation", "session_id", None, False),
+        ("Language", "language", None, False),
+    ]
+    for spk in speaker_cols:
+        headers.append((spk, spk, "0.00", "deter"))
+    headers.append(("Pass", "deter_pass_label", None, False))
+    return headers
+
+
 def discover_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
     """Return {batch_name: [conversation records]} for conversations with metrics.json."""
     batches: dict[str, list[dict]] = defaultdict(list)
@@ -413,6 +582,10 @@ FILL_HEADER = PatternFill("solid", fgColor=CLR_HEADER)
 FILL_SECTION = PatternFill("solid", fgColor=CLR_SECTION)
 FILL_ALT = PatternFill("solid", fgColor=CLR_ALT)
 FILL_TOTAL = PatternFill("solid", fgColor=CLR_TOTAL)
+FILL_DETER_PASS = PatternFill("solid", fgColor=CLR_BETTER)
+FILL_DETER_FAIL = PatternFill("solid", fgColor=CLR_BAD)
+FILL_DETER_PASS_LABEL = PatternFill("solid", fgColor=CLR_BETTER)
+FILL_DETER_FAIL_LABEL = PatternFill("solid", fgColor=CLR_BAD)
 FILL_DELTA = {
     "much_better": PatternFill("solid", fgColor=CLR_MUCH_BETTER),
     "better": PatternFill("solid", fgColor=CLR_BETTER),
@@ -532,12 +705,83 @@ def _write_section_header(ws, row: int, text: str, n_cols: int,
     return row + 1
 
 
-def _style_gap_column(ws, start_row: int, end_row: int) -> None:
-    """Narrow grey gutter between the two side-by-side tables."""
-    ws.column_dimensions[get_column_letter(GAP_COL)].width = 2
+def _padded_end_col(content_end_col: int) -> int:
+    return content_end_col + TRAILING_PAD_COLS
+
+
+def _batch_sort_key(batch_name: str) -> tuple[int, int | str]:
+    """Newest ``delivery_batch_MMDDYYYY`` first; other names sort after, A→Z."""
+    prefix = "delivery_batch_"
+    if batch_name.startswith(prefix):
+        suffix = batch_name[len(prefix):]
+        if suffix.isdigit():
+            return (0, -int(suffix))
+    return (1, batch_name)
+
+
+def _cell_has_border(cell) -> bool:
+    if isinstance(cell, MergedCell):
+        return True
+    b = cell.border
+    return bool(b and any((b.left.style, b.right.style, b.top.style, b.bottom.style)))
+
+
+def _style_trailing_pad(
+    ws,
+    pad_after_col: int,
+    pad_through_col: int | None = None,
+    *,
+    first_row: int = 1,
+    last_row: int | None = None,
+) -> None:
+    """Widen columns past the data block; touch only empty non-table cells for scroll."""
+    end = pad_through_col if pad_through_col is not None else (
+        pad_after_col + TRAILING_PAD_COLS
+    )
+    last_row = last_row if last_row is not None else ws.max_row
+    for col in range(pad_after_col + 1, end + 1):
+        ws.column_dimensions[get_column_letter(col)].width = TRAILING_PAD_WIDTH
+        for row in range(first_row, last_row + 1):
+            cell = ws.cell(row=row, column=col)
+            if _cell_has_border(cell):
+                continue
+            if cell.value is None:
+                cell.value = ""
+
+
+def _apply_batch_sheet_scroll_pad(
+    ws, first_row: int, last_row: int, content_end_col: int,
+) -> None:
+    """Four empty columns immediately after the rightmost data column."""
+    _style_trailing_pad(
+        ws,
+        content_end_col,
+        content_end_col + TRAILING_PAD_COLS,
+        first_row=first_row,
+        last_row=last_row,
+    )
+
+
+def _style_gap_column(ws, start_row: int, end_row: int, col: int = GAP_COL) -> None:
+    """Narrow grey gutter between side-by-side tables."""
+    ws.column_dimensions[get_column_letter(col)].width = 2
     fill = PatternFill("solid", fgColor="E7E6E6")
     for r in range(start_row, end_row + 1):
-        ws.cell(row=r, column=GAP_COL).fill = fill
+        ws.cell(row=r, column=col).fill = fill
+
+
+def _deter_cell_style(val, key: str) -> tuple[PatternFill | None, Font]:
+    if key == "deter_pass_label":
+        if val == "PASS" or (isinstance(val, str) and val.startswith("PASS")):
+            return FILL_DETER_PASS_LABEL, FONT_DELTA_GOOD
+        if val == "FAIL" or (isinstance(val, str) and val.startswith("FAIL")):
+            return FILL_DETER_FAIL_LABEL, FONT_DELTA_BAD
+        return None, FONT_BODY
+    if isinstance(val, (int, float)) and key.startswith("SPK"):
+        if val <= DETER_PASS_THRESHOLD_PCT:
+            return FILL_DETER_PASS, FONT_DELTA_GOOD
+        return FILL_DETER_FAIL, FONT_DELTA_BAD
+    return None, FONT_BODY
 
 
 def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
@@ -553,30 +797,50 @@ def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
         cell.alignment = ALIGN_CENTER
         cell.border = BORDER
 
-    text_keys = {"session_id", "language", "batch"}
+    text_keys = {"session_id", "language", "batch", "deter_pass_label"}
     for i, record in enumerate(rows):
         r = start_row + 1 + i
         is_total = record.get("language") in total_labels
         is_alt = i % 2 == 1 and not is_total
-        for j, (_, key, fmt, is_delta) in enumerate(headers):
+        for j, (_, key, fmt, col_kind) in enumerate(headers):
             col = start_col + j
             val = record.get(key)
-            if val is None and is_delta:
+            if val is None and col_kind is True:
                 display = "—"
             else:
                 display = val
             cell = ws.cell(row=r, column=col, value=display)
             cell.border = BORDER
 
-            if is_delta and val is not None:
+            if col_kind is True and val is not None:
                 band = _delta_band(val)
                 cell.fill = FILL_DELTA[band]
                 cell.font = _delta_font(band)
                 cell.number_format = fmt or "+0.0;-0.0"
                 cell.alignment = ALIGN_CENTER
+            elif col_kind == "deter":
+                fill, font = _deter_cell_style(val, key)
+                cell.font = font
+                if fill is not None:
+                    cell.fill = fill
+                elif is_total:
+                    cell.fill = FILL_TOTAL
+                    cell.font = FONT_TOTAL
+                elif is_alt:
+                    cell.fill = FILL_ALT
+                if fmt and val is not None:
+                    cell.number_format = fmt
+                cell.alignment = (
+                    ALIGN_LEFT if key in text_keys else ALIGN_RIGHT
+                )
             else:
                 cell.font = FONT_TOTAL if is_total else FONT_BODY
-                if is_total:
+                if key == "deter_pass_label" and val in ("PASS", "FAIL"):
+                    fill, font = _deter_cell_style(val, key)
+                    cell.font = font
+                    if fill is not None:
+                        cell.fill = fill
+                elif is_total:
                     cell.fill = FILL_TOTAL
                 elif is_alt:
                     cell.fill = FILL_ALT
@@ -637,13 +901,36 @@ def _autosize_columns(ws, col_ranges: list[tuple[int, int]],
                 max(max_len + 2, min_width), max_width)
 
 
+def _deter_block_cols(conv_headers: list[tuple]) -> tuple[int, int]:
+    """Return (gap_col, deter_lang_col) immediately after the conv metrics table."""
+    conv_end_col = CONV_COL + len(conv_headers) - 1
+    gap_col = conv_end_col + 1
+    return gap_col, gap_col + 1
+
+
 def _write_metrics_sheet(ws, title: str, subtitle: str,
                          conv_headers: list[tuple], conv_records: list[dict],
-                         lang_records: list[dict]) -> None:
-    """Side-by-side layout: language summary (A:K) | gap (L) | conversations (M→)."""
-    sheet_end_col = CONV_COL + len(conv_headers) - 1
-    row = _write_title_block(ws, title, subtitle, sheet_end_col)
-    row = _write_reading_guide(ws, row, sheet_end_col)
+                         lang_records: list[dict],
+                         deter_conv_headers: list[tuple] | None = None,
+                         deter_conv_records: list[dict] | None = None,
+                         deter_lang_records: list[dict] | None = None) -> None:
+    """Transcription tables (A→) and optional DetER tables after the conv block."""
+    conv_end_col = CONV_COL + len(conv_headers) - 1
+    deter_gap_col, deter_lang_col = _deter_block_cols(conv_headers)
+    content_end_col = conv_end_col
+    deter_conv_col: int | None = None
+    if deter_conv_headers and deter_conv_records is not None:
+        deter_lang_headers = build_deter_lang_headers(
+            speaker_columns(deter_conv_records))
+        deter_lang_width = len(deter_lang_headers)
+        deter_mid_gap = deter_lang_col + deter_lang_width
+        deter_conv_col = deter_mid_gap + 1
+        content_end_col = max(
+            content_end_col, deter_conv_col + len(deter_conv_headers) - 1)
+
+    padded_end_col = content_end_col + TRAILING_PAD_COLS
+    row = _write_title_block(ws, title, subtitle, padded_end_col)
+    row = _write_reading_guide(ws, row, padded_end_col)
 
     table_row = row
     row = _write_section_header(
@@ -656,6 +943,19 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         f"Per conversation ({len(conv_records)} session(s))",
         len(conv_headers), start_col=CONV_COL,
     )
+    if deter_conv_col is not None and deter_lang_records is not None:
+        deter_lang_headers = build_deter_lang_headers(
+            speaker_columns(deter_conv_records))
+        _write_section_header(
+            ws, table_row,
+            "DetER by language (avg per channel)",
+            len(deter_lang_headers), start_col=deter_lang_col,
+        )
+        _write_section_header(
+            ws, table_row,
+            f"DetER per conversation ({len(deter_conv_records)} session(s))",
+            len(deter_conv_headers), start_col=deter_conv_col,
+        )
     row = max(row, table_row + 1)
 
     header_row = row
@@ -665,50 +965,95 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         ws, row, conv_headers, conv_records, start_col=CONV_COL)
     data_end = max(lang_end, conv_end)
 
+    if deter_conv_col is not None and deter_conv_records is not None:
+        deter_lang_headers = build_deter_lang_headers(
+            speaker_columns(deter_conv_records))
+        deter_lang_end = _write_table(
+            ws, row, deter_lang_headers, deter_lang_records or [],
+            start_col=deter_lang_col)
+        deter_conv_end = _write_table(
+            ws, row, deter_conv_headers, deter_conv_records,
+            start_col=deter_conv_col)
+        data_end = max(data_end, deter_lang_end, deter_conv_end)
+        deter_mid_gap = deter_lang_col + len(deter_lang_headers)
+        _style_gap_column(ws, table_row, data_end - 1, col=deter_gap_col)
+        _style_gap_column(ws, table_row, data_end - 1, col=deter_mid_gap)
+
     _style_gap_column(ws, table_row, data_end - 1)
 
-    # Freeze title + legend + column headers only (row 7); columns scroll freely.
     ws.freeze_panes = ws.cell(row=header_row + 1, column=LANG_COL)
-    _autosize_columns(ws, [(LANG_COL, LANG_COL + len(LANG_HEADERS) - 1),
-                           (CONV_COL, sheet_end_col)])
+    col_ranges = [
+        (LANG_COL, LANG_COL + len(LANG_HEADERS) - 1),
+        (CONV_COL, CONV_COL + len(conv_headers) - 1),
+    ]
+    if deter_conv_col is not None and deter_conv_headers is not None:
+        col_ranges.append((deter_lang_col, deter_lang_col + len(deter_lang_headers) - 1))
+        col_ranges.append((deter_conv_col, deter_conv_col + len(deter_conv_headers) - 1))
+    _autosize_columns(ws, col_ranges)
+    _apply_batch_sheet_scroll_pad(ws, table_row, data_end - 1, content_end_col)
 
 
-def write_batch_sheet(ws, batch_name: str, records: list[dict], generated: str) -> None:
+def write_batch_sheet(ws, batch_name: str, records: list[dict], generated: str,
+                      deter_records: list[dict] | None = None) -> None:
     title = f"Batch — {batch_name}"
     subtitle = (
         f"Human-annotated transcript vs Qwen3-ASR  ·  vs baseline reference  ·  "
         f"{len(records)} conversation(s)  ·  Generated {generated} UTC"
     )
+    deter_kwargs: dict = {}
+    if deter_records:
+        speaker_cols = speaker_columns(deter_records)
+        deter_kwargs = {
+            "deter_conv_headers": build_deter_conv_headers(speaker_cols),
+            "deter_conv_records": deter_records,
+            "deter_lang_records": deter_language_summary(deter_records, speaker_cols),
+        }
     _write_metrics_sheet(
         ws, title, subtitle,
         CONV_HEADERS, records, language_summary(records),
+        **deter_kwargs,
     )
 
 
-def write_all_batches_sheet(ws, all_records: list[dict], generated: str) -> None:
+def write_all_batches_sheet(ws, all_records: list[dict], generated: str,
+                            all_deter_records: list[dict] | None = None) -> None:
     conv_headers = [("Batch", "batch", None, False)] + list(CONV_HEADERS)
     title = "All batches — combined"
     subtitle = (
         f"Human-annotated transcript vs Qwen3-ASR  ·  vs baseline reference  ·  "
         f"{len(all_records)} conversation(s)  ·  Generated {generated} UTC"
     )
+    deter_kwargs: dict = {}
+    if all_deter_records:
+        speaker_cols = speaker_columns(all_deter_records)
+        deter_kwargs = {
+            "deter_conv_headers": build_deter_conv_headers(
+                speaker_cols, include_batch=True),
+            "deter_conv_records": all_deter_records,
+            "deter_lang_records": deter_language_summary(
+                all_deter_records, speaker_cols),
+        }
     _write_metrics_sheet(
         ws, title, subtitle,
         conv_headers, all_records, language_summary(all_records),
+        **deter_kwargs,
     )
 
 
 def write_reference_sheet(ws) -> None:
     """Baseline reference corpus — separate tab for lookup."""
-    n_cols = len(REF_HEADERS)
+    ref_end = len(REF_HEADERS)
+    deter_end = REF_DETER_COL + len(REF_DETER_HEADERS) - 1
+    content_end_col = max(ref_end, deter_end)
+    padded_end_col = _padded_end_col(content_end_col)
     row = _write_title_block(
         ws,
         "Baseline reference",
         "Independent vendor corpus · identical scoring pipeline (Qwen3-ASR, normalization, metrics)",
-        n_cols,
+        padded_end_col,
     )
     row += 1
-    row = _write_section_header(ws, row, "Per language", n_cols)
+    row = _write_section_header(ws, row, "Per language", ref_end)
     ref_rows = []
     for lang in sorted(k for k in REFERENCE if k != "ALL"):
         ref = REFERENCE[lang]
@@ -719,6 +1064,7 @@ def write_reference_sheet(ws) -> None:
             "cer": ref["cer"],
             "wcmr": ref["wcmr"],
             "gt3_pct": ref["gt3_pct"],
+            "deter_pass_max": DETER_PASS_THRESHOLD_PCT,
         })
     all_ref = REFERENCE["ALL"]
     ref_rows.append({
@@ -728,29 +1074,36 @@ def write_reference_sheet(ws) -> None:
         "cer": all_ref["cer"],
         "wcmr": all_ref["wcmr"],
         "gt3_pct": all_ref["gt3_pct"],
+        "deter_pass_max": DETER_PASS_THRESHOLD_PCT,
     })
+    table_start = row
     _write_table(ws, row, REF_HEADERS, ref_rows)
-    _autosize_columns(ws, [(1, n_cols)])
+    _write_table(ws, row, REF_DETER_HEADERS, ref_rows, start_col=REF_DETER_COL)
+    data_end = table_start + len(ref_rows)
+    _style_gap_column(ws, table_start - 1, data_end, col=ref_end + 1)
+    _autosize_columns(ws, [(1, ref_end), (REF_DETER_COL, deter_end)])
+    _style_trailing_pad(ws, content_end_col)
 
 
 def write_top_erroneous_segments_sheet(ws, rows: list[dict], generated: str) -> None:
     """Worst segments per speaker — sourced from SPK*_top_errors.json."""
-    n_cols = len(TOP_ERRORS_HEADERS)
+    content_end_col = len(TOP_ERRORS_HEADERS)
+    padded_end_col = _padded_end_col(content_end_col)
     row = _write_title_block(
         ws,
         "Top erroneous segments",
         f"Per-speaker worst segments (rank_error_segments.py)  ·  "
         f"{len(rows)} row(s)  ·  Generated {generated} UTC",
-        n_cols,
+        padded_end_col,
     )
     row += 1
-    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=n_cols)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=padded_end_col)
     note = ws.cell(
         row=row, column=1,
         value=(
-            "Japanese rows ranked by CER (character errors); all other languages "
-            "by WER (word errors). Error rate % can exceed 100 when insertions "
-            "dominate. Use Start/End to locate audio in SPK*.wav."
+            "Japanese and Korean rows ranked by CER (character errors); all other "
+            "languages by WER (word errors). Error rate % can exceed 100 when "
+            "insertions dominate. Use Start/End to locate audio in SPK*.wav."
         ),
     )
     note.font = FONT_LEGEND
@@ -776,19 +1129,21 @@ def write_top_erroneous_segments_sheet(ws, rows: list[dict], generated: str) -> 
     for i, (_, key, _, _) in enumerate(TOP_ERRORS_HEADERS):
         letter = get_column_letter(1 + i)
         ws.column_dimensions[letter].width = col_widths.get(key, 11)
+    _style_trailing_pad(ws, content_end_col)
 
 
 def write_definitions_sheet(ws) -> None:
     """Glossary of metric columns used in the batch / All Batches tabs."""
-    n_cols = 2
+    content_end_col = 2
+    padded_end_col = _padded_end_col(content_end_col)
     row = _write_title_block(
         ws,
         "Metric definitions",
         "Column glossary · human-annotated transcript vs Qwen3-ASR-1.7B",
-        n_cols,
+        padded_end_col,
     )
     row += 1
-    row = _write_section_header(ws, row, "Columns", n_cols)
+    row = _write_section_header(ws, row, "Columns", content_end_col)
 
     wrap = Alignment(horizontal="left", vertical="top", wrap_text=True)
     for col, label in enumerate(("Metric", "Definition"), start=1):
@@ -819,7 +1174,7 @@ def write_definitions_sheet(ws) -> None:
 
     if TOP_ERRORS_DEFINITIONS:
         row = row + 1 + len(METRIC_DEFINITIONS) + 1
-        row = _write_section_header(ws, row, "Top erroneous segments tab", n_cols)
+        row = _write_section_header(ws, row, "Top erroneous segments tab", content_end_col)
         for col, label in enumerate(("Column", "Definition"), start=1):
             cell = ws.cell(row=row, column=col, value=label)
             cell.font = FONT_HEADER
@@ -842,33 +1197,55 @@ def write_definitions_sheet(ws) -> None:
             ws.row_dimensions[r].height = 36
 
     ws.freeze_panes = ws.cell(row=freeze_row, column=1)
+    _style_trailing_pad(ws, content_end_col)
 
 
 def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
-                   generated: str) -> Workbook:
+                   generated: str,
+                   deter_batches: dict[str, list[dict]] | None = None) -> Workbook:
+    deter_batches = deter_batches or {}
     wb = Workbook()
     wb.remove(wb.active)
 
-    ws_def = wb.create_sheet(title=_safe_sheet_name("Definitions"), index=0)
+    sheet_idx = 0
+    ws_def = wb.create_sheet(title=_safe_sheet_name("Definitions"), index=sheet_idx)
     write_definitions_sheet(ws_def)
+    sheet_idx += 1
+
+    ws_ref = wb.create_sheet(title=_safe_sheet_name("Reference"), index=sheet_idx)
+    write_reference_sheet(ws_ref)
+    sheet_idx += 1
 
     all_records: list[dict] = []
+    all_deter_records: list[dict] = []
     for batch_name, records in batches.items():
         all_records.extend(records)
-        ws = wb.create_sheet(title=_safe_sheet_name(batch_name))
-        write_batch_sheet(ws, batch_name, records, generated)
+        deter_records = deter_batches.get(batch_name)
+        if deter_records:
+            all_deter_records.extend(deter_records)
 
     if all_records:
         all_records.sort(key=lambda r: (r["batch"], r["session_id"]))
-        ws_all = wb.create_sheet(title=_safe_sheet_name("All Batches"))
-        write_all_batches_sheet(ws_all, all_records, generated)
+        all_deter = all_deter_records or None
+        if all_deter:
+            all_deter.sort(key=lambda r: (r["batch"], r["session_id"]))
+        ws_all = wb.create_sheet(
+            title=_safe_sheet_name("All Batches"), index=sheet_idx)
+        write_all_batches_sheet(ws_all, all_records, generated, all_deter)
+        sheet_idx += 1
+
+    for batch_name, records in sorted(
+        batches.items(), key=lambda item: _batch_sort_key(item[0]),
+    ):
+        deter_records = deter_batches.get(batch_name)
+        ws = wb.create_sheet(title=_safe_sheet_name(batch_name), index=sheet_idx)
+        write_batch_sheet(ws, batch_name, records, generated, deter_records)
+        sheet_idx += 1
 
     if top_error_rows:
-        ws_top = wb.create_sheet(title=_safe_sheet_name("top_erroneous_segments"))
+        ws_top = wb.create_sheet(
+            title=_safe_sheet_name("top_erroneous_segments"), index=sheet_idx)
         write_top_erroneous_segments_sheet(ws_top, top_error_rows, generated)
-
-    ws_ref = wb.create_sheet(title=_safe_sheet_name("Reference"))
-    write_reference_sheet(ws_ref)
 
     return wb
 
@@ -894,24 +1271,35 @@ def main(argv: list[str] | None = None) -> int:
         print("No metrics.json files found in scope.")
         return 1
 
+    deter_batches = discover_deter_records(root, args.batch)
     top_error_rows = discover_top_error_segments(root, args.batch)
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    wb = build_workbook(batches, top_error_rows, generated)
+    wb = build_workbook(batches, top_error_rows, generated, deter_batches)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
 
     n_conv = sum(len(v) for v in batches.values())
+    n_deter = sum(len(v) for v in deter_batches.values())
+    deter_note = (
+        f" · DetER on {n_deter} conversation(s)"
+        if n_deter else " · no deter.json found"
+    )
     top_note = (
         f" + top_erroneous_segments ({len(top_error_rows)} row(s))"
         if top_error_rows else " (no SPK*_top_errors.json found)"
     )
     print(f"Wrote {out_path.resolve()}")
-    print(f"  Definitions tab + {len(batches)} batch tab(s) + All Batches"
-          f"{top_note} + Reference  ({n_conv} conversation(s)).")
-    for batch_name, records in batches.items():
+    print(
+        f"  Tabs: Definitions, Reference, All Batches, "
+        f"{len(batches)} batch tab(s) (newest first)"
+        f"{top_note}  ({n_conv} conversation(s){deter_note})."
+    )
+    for batch_name, records in sorted(
+        batches.items(), key=lambda item: _batch_sort_key(item[0]),
+    ):
         langs = sorted({r["language"] for r in records})
         print(f"    {batch_name}: {len(records)} conversation(s)  [{', '.join(langs)}]")
     return 0
