@@ -4,9 +4,8 @@ Folder layout:
 
     Conversations/<batch>/<conversation>/<channel>/...
 
-All workflow scripts (transcript_extraction, qwen_asr_transcription,
-normalize_transcripts, rank_error_segments, compute_metrics) and the
-``diarization_pipeline/`` DetER scripts use these helpers so they share the same so they share the same
+All workflow scripts (``word_error_pipeline/``, ``run_pipeline.py``, and the
+``diarization_pipeline/`` DetER scripts) use these helpers so they share the same
 ``--batch`` / ``--conversation`` / ``--file`` / ``--overwrite`` / ``--limit``
 arguments and discovery behavior.
 """

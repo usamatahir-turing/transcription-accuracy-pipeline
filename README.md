@@ -36,16 +36,21 @@ Conversations/
     <conversation>/                 e.g. NV-KO-SS03-CONVO07
       SPK01.seglst.json               human annotation (input)
       SPK01.wav                       per-speaker audio
-      SPK01_transcript.jsonl          step 1 output
-      SPK01_qwen.jsonl                step 2 output
-      SPK01_transcript_norm.jsonl     step 3 output
-      SPK01_qwen_norm.jsonl           step 3 output
-      SPK01_top_errors.json           step 4 output (optional review)
-      metrics.json                    step 5 output
+      SPK01_transcript.jsonl          WER step 1 output
+      SPK01_qwen.jsonl                WER step 2 output
+      SPK01_transcript_norm.jsonl     WER step 3 output
+      SPK01_qwen_norm.jsonl           WER step 3 output
+      SPK01_top_errors.json           WER step 4 output
+      metrics.json                    WER step 5 output
       SPK01_der.rttm                  DetER speech-only reference (from seglst)
       SPK01_sad.rttm                  DetER SAD hypothesis (Sortformer ∪ Silero)
       SPK01_deter.json                DetER per-speaker result
       deter.json                      DetER conversation rollup
+
+word_error_pipeline/                WER/CER pipeline modules
+diarization_pipeline/               DetER pipeline modules
+run_pipeline.py                     Orchestrator (DetER + WER; excludes report)
+generate_report.py                  Excel report (run manually after metrics)
 ```
 
 Legacy ``SPK*.rttm`` files (if present) copy every seglst turn including NSV-only
@@ -98,6 +103,37 @@ Confirms imports, `BasicTextNormalizer`, and `Qwen3ASRModel` load. Reports wheth
 ---
 
 ## Pipeline (run in order)
+
+### Full orchestration — `run_pipeline.py`
+
+Runs DetER and the full WER path in one command (extract -> ASR -> normalize -> rank -> metrics).
+Does **not** run `generate_report.py` — run that separately when you want the Excel file.
+
+```powershell
+# one batch (DetER + WER)
+python run_pipeline.py --batch delivery_batch_06302026
+
+# one conversation
+python run_pipeline.py --conversation NV-KO-SS03-CONVO07
+
+# WER only (skip DetER)
+python run_pipeline.py --batch delivery_batch_06302026 --skip-deter
+
+# DetER only
+python run_pipeline.py --batch delivery_batch_06302026 --skip-wer
+```
+
+Equivalent module form:
+
+```powershell
+python -m word_error_pipeline.transcript_extraction --batch delivery_batch_06302026
+```
+
+Root-level script names (`transcript_extraction.py`, etc.) still work as thin shims.
+
+---
+
+### Scope arguments (all workflow scripts)
 
 All workflow scripts share the same scope arguments (from `workflow_common.py`):
 
@@ -187,7 +223,7 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 
 ---
 
-### Step 4 — `rank_error_segments.py` (optional review)
+### Step 4 — `rank_error_segments.py`
 
 **What it does:** Joins `SPK*_transcript_norm.jsonl` with `SPK*_qwen_norm.jsonl` on scored rows and ranks segments by absolute error count. Writes `SPK*_top_errors.json` per speaker with the worst segments for manual review.
 
@@ -254,9 +290,14 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 
 | File | Role |
 |------|------|
+| `run_pipeline.py` | Orchestrator: DetER + full WER pipeline |
+| `word_error_pipeline/` | WER/CER modules (extract, ASR, normalize, rank, metrics) |
 | `workflow_common.py` | Shared `--batch` / `--conversation` / `--file` argument parsing and file discovery |
-| `filler_removal.py` | Language-specific filler/backchannel removal for normalization |
 | `diarization_pipeline/` | DetER pipeline (seglst ref RTTM, SAD hypothesis, NeMo scoring) |
+| `generate_report.py` | Excel report (manual step after metrics) |
+| `copy_delivery_batch.py` | Copy an external delivery batch into `Conversations/` |
+| `download_and_upload_data.py` | Mirror a Google Drive folder into `Conversations/` |
+| `check_digit_symbol_guidelines.py` | CSV audit of digit/symbol guideline violations |
 | `guidelines_for_languages/` | Source transcription guidelines (reference for annotation rules) |
 | `requirements.txt` | Python dependencies |
 | `test_imports.py` | Environment smoke test |
@@ -267,12 +308,23 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 ## Full run (example)
 
 ```powershell
-.\.venv\Scripts\python.exe transcript_extraction.py
-.\.venv\Scripts\python.exe qwen_asr_transcription.py
-.\.venv\Scripts\python.exe normalize_transcripts.py
-.\.venv\Scripts\python.exe rank_error_segments.py
-.\.venv\Scripts\python.exe compute_metrics.py
-.\.venv\Scripts\python.exe generate_report.py
+# DetER + WER in one command
+python run_pipeline.py --batch delivery_batch_06302026
+
+# Excel report (manual)
+python generate_report.py --batch delivery_batch_06302026
+```
+
+Or step-by-step:
+
+```powershell
+python run_pipeline.py --batch delivery_batch_06302026 --skip-wer   # DetER only
+python transcript_extraction.py --batch delivery_batch_06302026
+python qwen_asr_transcription.py --batch delivery_batch_06302026
+python normalize_transcripts.py --batch delivery_batch_06302026
+python rank_error_segments.py --batch delivery_batch_06302026
+python compute_metrics.py --batch delivery_batch_06302026
+python generate_report.py --batch delivery_batch_06302026
 ```
 
 Output: `reports/transcription_accuracy_metrics.xlsx`
