@@ -371,6 +371,16 @@ def derive_language(session_id: str) -> str:
     return parts[1] if len(parts) >= 2 else ""
 
 
+def _ordered_deter_slots(speakers: dict) -> list[tuple[str, str]]:
+    """Map sorted speaker channel keys to contiguous SPK01.. labels for reporting."""
+    slots: list[tuple[str, str]] = []
+    for i, spk in enumerate(sorted(speakers.keys()), start=1):
+        if i > MAX_DETER_SPEAKER_COLS:
+            break
+        slots.append((f"SPK{i:02d}", spk))
+    return slots
+
+
 def speaker_columns(records: list[dict]) -> list[str]:
     """SPK01…SPKnn for DetER tables (contiguous, up to ``MAX_DETER_SPEAKER_COLS``)."""
     max_n = 0
@@ -400,9 +410,9 @@ def deter_to_record(batch: str, data: dict, language: str = "") -> dict:
         "deter_pass": conv.get("pass"),
         "mean_deter_pct": conv.get("mean_deter_pct"),
     }
-    for spk, info in speakers.items():
-        deter = (info or {}).get("deter") or {}
-        record[spk] = deter.get("error_rate_pct")
+    for slot, spk in _ordered_deter_slots(speakers):
+        deter = (speakers.get(spk) or {}).get("deter") or {}
+        record[slot] = deter.get("error_rate_pct")
     record["deter_pass_label"] = (
         "PASS" if record["deter_pass"] else "FAIL"
         if record["deter_pass"] is not None else "—"
