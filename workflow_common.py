@@ -2,7 +2,7 @@
 
 Folder layout:
 
-    Conversations/<batch>/<conversation>/SPK*...
+    Conversations/<batch>/<conversation>/<channel>/...
 
 All workflow scripts (transcript_extraction, qwen_asr_transcription,
 normalize_transcripts, rank_error_segments, compute_metrics) and the
@@ -28,7 +28,7 @@ def add_scope_args(parser: argparse.ArgumentParser, with_file: bool = False) -> 
                              "(searched across all batches unless --batch is given).")
     if with_file:
         parser.add_argument("--file", default=None,
-                            help="Only this speaker, e.g. SPK01. Requires --conversation.")
+                            help="Only this channel stem, e.g. SPK01. Requires --conversation.")
     parser.add_argument("--overwrite", action="store_true",
                         help="Reprocess items whose output already exists.")
     parser.add_argument("--limit", type=int, default=0,
@@ -67,10 +67,10 @@ def resolve_conversation_dirs(root: Path, batch: str | None = None,
 
 def resolve_speaker_files(root: Path, batch: str | None, conversation: str | None,
                           file: str | None, suffix: str) -> list[Path]:
-    """Return speaker files matching ``SPK*{suffix}`` across the resolved scope.
+    """Return channel files matching ``*{suffix}`` across the resolved scope.
 
     If ``file`` (e.g. 'SPK01') is given it requires ``conversation`` and matches
-    that single speaker's ``{file}{suffix}`` in each resolved conversation.
+    that single channel's ``{file}{suffix}`` in each resolved conversation.
     """
     if file and not conversation:
         raise ValueError("--file requires --conversation to also be set.")
@@ -83,7 +83,7 @@ def resolve_speaker_files(root: Path, batch: str | None, conversation: str | Non
             if p.is_file():
                 files.append(p)
         else:
-            files.extend(sorted(cdir.glob(f"SPK*{suffix}")))
+            files.extend(sorted(cdir.glob(f"*{suffix}")))
 
     if file and not files:
         raise FileNotFoundError(

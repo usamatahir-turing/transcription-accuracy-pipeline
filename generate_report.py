@@ -512,7 +512,7 @@ def discover_top_error_segments(root: Path, batch: str | None) -> list[dict]:
     rows: list[dict] = []
     for conv_dir in resolve_conversation_dirs(root, batch, None):
         batch_name = conv_dir.parent.name
-        for path in sorted(conv_dir.glob("SPK*_top_errors.json")):
+        for path in sorted(conv_dir.glob("*_top_errors.json")):
             data = json.loads(path.read_text(encoding="utf-8"))
             session_id = data.get("session_id", conv_dir.name)
             speaker = data.get("speaker", path.stem.replace("_top_errors", ""))

@@ -1,7 +1,7 @@
 """Extract per-segment reference transcripts from the seglst.json annotations.
 
-For every ``Conversations/<SESSION>/SPK*.seglst.json`` this writes a row-aligned
-``SPK*_transcript.jsonl`` next to it. Each line is one segment, in original order,
+For every ``Conversations/<SESSION>/*.seglst.json`` this writes a row-aligned
+``{stem}_transcript.jsonl`` next to it. Each line is one segment, in original order,
 carrying everything the downstream pipeline needs:
 
     {"idx", "session_id", "language", "speaker", "start", "end", "text"}
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}")
         return 1
     if not seglst_files:
-        print(f"No SPK*.seglst.json files found for the given scope under {root.resolve()}")
+        print(f"No *.seglst.json files found for the given scope under {root.resolve()}")
         return 1
     if args.limit > 0:
         seglst_files = seglst_files[: args.limit]

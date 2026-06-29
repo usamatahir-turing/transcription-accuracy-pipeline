@@ -143,7 +143,7 @@ def compute_block(pairs: list[tuple[str, str]], n_total: int) -> dict:
 
 
 def process_conversation(session_dir: Path) -> dict | None:
-    ref_files = sorted(session_dir.glob("SPK*_transcript_norm.jsonl"))
+    ref_files = sorted(session_dir.glob("*_transcript_norm.jsonl"))
     if not ref_files:
         return None
 

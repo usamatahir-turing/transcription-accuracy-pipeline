@@ -154,7 +154,7 @@ def process_conversation(
     batch_size: int,
     sad_mode: SadMode,
 ) -> dict | None:
-    seglst_files = sorted(session_dir.glob("SPK*.seglst.json"))
+    seglst_files = sorted(session_dir.glob("*.seglst.json"))
     if not seglst_files:
         return None
 
