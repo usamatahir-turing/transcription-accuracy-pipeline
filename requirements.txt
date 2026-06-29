@@ -22,3 +22,8 @@ numpy
 pandas
 tabulate
 openpyxl
+
+# Google Drive sync (download_and_upload_data.py)
+google-auth
+google-api-python-client
+requests
