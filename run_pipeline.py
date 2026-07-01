@@ -29,7 +29,8 @@ def build_scope_argv(args: argparse.Namespace) -> list[str]:
     if args.batch:
         argv.extend(["--batch", args.batch])
     if args.conversation:
-        argv.extend(["--conversation", args.conversation])
+        for name in args.conversation:
+            argv.extend(["--conversation", name])
     if args.file:
         argv.extend(["--file", args.file])
     if args.overwrite:

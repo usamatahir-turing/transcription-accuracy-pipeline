@@ -141,7 +141,7 @@ All workflow scripts share the same scope arguments (from `workflow_common.py`):
 |----------|-------------|
 | `--conversations` | Root folder (default: `Conversations`) |
 | `--batch` | Single batch folder, e.g. `delivery_batch_06092026` |
-| `--conversation` | Single session, e.g. `NV-KO-SS03-CONVO07` |
+| `--conversation` | One or more sessions; repeat the flag, e.g. `--conversation NV-KO-SS03-CONVO07 --conversation NV-AR-SS03-CONVO09` |
 | `--file` | Single speaker, e.g. `SPK01` (requires `--conversation`) |
 | `--overwrite` | Reprocess even if output already exists |
 | `--limit N` | Process only the first N items (0 = all) |

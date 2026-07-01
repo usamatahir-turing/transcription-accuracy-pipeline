@@ -22,9 +22,14 @@ def add_scope_args(parser: argparse.ArgumentParser, with_file: bool = False) -> 
                         help="Root folder (default: ./Conversations).")
     parser.add_argument("--batch", default=None,
                         help="Only this batch folder, e.g. delivery_batch_06092026.")
-    parser.add_argument("--conversation", default=None,
-                        help="Only this conversation, e.g. NV-AR-SS03-CONVO09 "
-                             "(searched across all batches unless --batch is given).")
+    parser.add_argument(
+        "--conversation",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Only this conversation, e.g. NV-AR-SS03-CONVO09; repeat for "
+             "multiple (searched across all batches unless --batch is given).",
+    )
     if with_file:
         parser.add_argument("--file", default=None,
                             help="Only this channel stem, e.g. SPK01. Requires --conversation.")
@@ -34,11 +39,23 @@ def add_scope_args(parser: argparse.ArgumentParser, with_file: bool = False) -> 
                         help="Process only the first N items (0 = all).")
 
 
+def _conversation_filter(
+    conversation: str | list[str] | None,
+) -> set[str] | None:
+    if conversation is None:
+        return None
+    if isinstance(conversation, str):
+        return {conversation}
+    return set(conversation)
+
+
 def resolve_conversation_dirs(root: Path, batch: str | None = None,
-                              conversation: str | None = None) -> list[Path]:
+                              conversation: str | list[str] | None = None) -> list[Path]:
     """Return conversation directories (root/<batch>/<conversation>) in scope.
 
-    Raises FileNotFoundError with a clear message for a bad batch/conversation.
+    ``conversation`` may be a single name or a list; when omitted, all
+    conversations in scope are returned. Raises FileNotFoundError for a bad
+    batch or any requested conversation name with no matching folder.
     """
     if not root.is_dir():
         raise FileNotFoundError(f"conversations folder not found: {root.resolve()}")
@@ -51,16 +68,23 @@ def resolve_conversation_dirs(root: Path, batch: str | None = None,
     else:
         batch_dirs = sorted(p for p in root.iterdir() if p.is_dir())
 
+    wanted = _conversation_filter(conversation)
+
     conv_dirs: list[Path] = []
     for b in batch_dirs:
         for c in sorted(p for p in b.iterdir() if p.is_dir()):
-            if conversation and c.name != conversation:
+            if wanted and c.name not in wanted:
                 continue
             conv_dirs.append(c)
 
-    if conversation and not conv_dirs:
-        where = f" in batch {batch!r}" if batch else ""
-        raise FileNotFoundError(f"conversation {conversation!r} not found{where}.")
+    if wanted:
+        found = {c.name for c in conv_dirs}
+        missing = sorted(wanted - found)
+        if missing:
+            where = f" in batch {batch!r}" if batch else ""
+            names = ", ".join(missing)
+            raise FileNotFoundError(
+                f"conversation(s) not found{where}: {names}.")
     return conv_dirs
 
 
