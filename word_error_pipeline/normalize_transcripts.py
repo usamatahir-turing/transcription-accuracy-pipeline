@@ -10,7 +10,7 @@ Normalization track (same as Sample_review_report_06042026.md):
   1. OpenAI Whisper BasicTextNormalizer (lower-case, NFKC, brackets/punctuation
      stripped, diacritics preserved). This also removes well-formed NSV like
      [laugh] / [breath].
-  2. Language-specific filler / backchannel stripping via ``filler_removal.py``
+  2. Language-specific filler / backchannel stripping via ``word_error_pipeline.filler_removal``
      (pure vocalizations and backchannels only; discourse markers are kept).
   3. Japanese only: morpheme-spaced text is re-tokenized for scoring — all
      whitespace is removed, then a space is inserted between every character.
@@ -22,9 +22,9 @@ an empty hypothesis (Qwen missed real speech) -> that correctly counts later.
 
 Usage
 -----
-    .\\.venv\\Scripts\\python.exe normalize_transcripts.py
-    .\\.venv\\Scripts\\python.exe normalize_transcripts.py --conversation NV-AR-SS03-CONVO09
-    .\\.venv\\Scripts\\python.exe normalize_transcripts.py --conversation NV-AR-SS03-CONVO09 --file SPK01
+    python -m word_error_pipeline.normalize_transcripts
+    python -m word_error_pipeline.normalize_transcripts --conversation NV-AR-SS03-CONVO09
+    python -m word_error_pipeline.normalize_transcripts --conversation NV-AR-SS03-CONVO09 --file SPK01
 """
 
 from __future__ import annotations

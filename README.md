@@ -12,7 +12,7 @@ The evaluation is **segment-level**. Each speech segment defined in `SPK*.seglst
 2. **Hypothesis** — Qwen3-ASR transcription of the same audio slice (`SPK*.wav`, cut to the segment's start/end time).
 3. **Normalization (both sides, same rules)** — two stages applied to both reference and hypothesis:
    - **Whisper `BasicTextNormalizer`** — lowercase, NFKC, strip punctuation/brackets. This **removes NSV tags** (e.g. `[laugh]`, `[breath]`, `[inhale]`) from the text used for scoring; diacritics are preserved.
-   - **Filler/backchannel stripping** — ``filler_removal.py`` removes pure hesitation vocalizations and backchannels (discourse markers like *genau*, *tipo*, *そうですね* are kept).
+   - **Filler/backchannel stripping** — ``word_error_pipeline/filler_removal.py`` removes pure hesitation vocalizations and backchannels (discourse markers like *genau*, *tipo*, *そうですね* are kept).
    
    Segments where the **reference** has no real speech left after normalization (NSV-only, empty, filler-only, or backchannel-only) are marked `scored: false` and excluded from metrics.
 4. **Scoring** — on all `scored` segments, micro-averaged via `jiwer`:
@@ -106,7 +106,7 @@ Confirms imports, `BasicTextNormalizer`, and `Qwen3ASRModel` load. Reports wheth
 
 ### Full orchestration — `run_pipeline.py`
 
-Runs DetER and the full WER path in one command (extract -> ASR -> normalize -> rank -> metrics).
+Runs DetER, overlap ratio, and the full WER path in one command (extract -> ASR -> normalize -> rank -> metrics).
 Does **not** run `generate_report.py` — run that separately when you want the Excel file.
 
 ```powershell
@@ -116,20 +116,21 @@ python run_pipeline.py --batch delivery_batch_06302026
 # one conversation
 python run_pipeline.py --conversation NV-KO-SS03-CONVO07
 
-# WER only (skip DetER)
-python run_pipeline.py --batch delivery_batch_06302026 --skip-deter
+# WER only (skip DetER and overlap)
+python run_pipeline.py --batch delivery_batch_06302026 --skip-deter --skip-overlap
+
+# Overlap only (no DetER, no WER)
+python run_pipeline.py --batch delivery_batch_06302026 --skip-deter --skip-wer
 
 # DetER only
-python run_pipeline.py --batch delivery_batch_06302026 --skip-wer
+python run_pipeline.py --batch delivery_batch_06302026 --skip-wer --skip-overlap
 ```
 
-Equivalent module form:
+Individual WER steps (when not using ``run_pipeline.py``):
 
 ```powershell
 python -m word_error_pipeline.transcript_extraction --batch delivery_batch_06302026
 ```
-
-Root-level script names (`transcript_extraction.py`, etc.) still work as thin shims.
 
 ---
 
@@ -148,7 +149,7 @@ All workflow scripts share the same scope arguments (from `workflow_common.py`):
 
 ---
 
-### Step 1 — `transcript_extraction.py`
+### Step 1 — `word_error_pipeline.transcript_extraction`
 
 **What it does:** Reads `SPK*.seglst.json` and writes one row per segment to `SPK*_transcript.jsonl`. Text is kept **raw** (NSV tags like `[laugh]` preserved). Each line includes `idx`, `session_id`, `language`, `speaker`, `start`, `end`, and `text`.
 
@@ -156,21 +157,21 @@ All workflow scripts share the same scope arguments (from `workflow_common.py`):
 
 ```powershell
 # all conversations in all batches
-.\.venv\Scripts\python.exe transcript_extraction.py
+python -m word_error_pipeline.transcript_extraction
 
 # one batch
-.\.venv\Scripts\python.exe transcript_extraction.py --batch delivery_batch_06092026
+python -m word_error_pipeline.transcript_extraction --batch delivery_batch_06092026
 
 # one conversation
-.\.venv\Scripts\python.exe transcript_extraction.py --conversation NV-KO-SS03-CONVO07
+python -m word_error_pipeline.transcript_extraction --conversation NV-KO-SS03-CONVO07
 
 # one speaker
-.\.venv\Scripts\python.exe transcript_extraction.py --conversation NV-KO-SS03-CONVO07 --file SPK01
+python -m word_error_pipeline.transcript_extraction --conversation NV-KO-SS03-CONVO07 --file SPK01
 ```
 
 ---
 
-### Step 2 — `qwen_asr_transcription.py`
+### Step 2 — `word_error_pipeline.qwen_asr_transcription`
 
 **What it does:** For each `SPK*_transcript.jsonl`, loads the matching `SPK*.wav`, slices audio per segment timestamp, transcribes each slice with **Qwen3-ASR-1.7B**, and writes row-aligned `SPK*_qwen.jsonl` (same row count and `idx` as the reference).
 
@@ -178,26 +179,26 @@ All workflow scripts share the same scope arguments (from `workflow_common.py`):
 
 ```powershell
 # all (slow — downloads/runs the model on first use)
-.\.venv\Scripts\python.exe qwen_asr_transcription.py
+python -m word_error_pipeline.qwen_asr_transcription
 
 # smoke test: first item only
-.\.venv\Scripts\python.exe qwen_asr_transcription.py --limit 1
+python -m word_error_pipeline.qwen_asr_transcription --limit 1
 
 # one conversation
-.\.venv\Scripts\python.exe qwen_asr_transcription.py --conversation NV-KO-SS03-CONVO07
+python -m word_error_pipeline.qwen_asr_transcription --conversation NV-KO-SS03-CONVO07
 
 # one speaker
-.\.venv\Scripts\python.exe qwen_asr_transcription.py --conversation NV-KO-SS03-CONVO07 --file SPK03
+python -m word_error_pipeline.qwen_asr_transcription --conversation NV-KO-SS03-CONVO07 --file SPK03
 
 # re-run after code/model changes
-.\.venv\Scripts\python.exe qwen_asr_transcription.py --overwrite
+python -m word_error_pipeline.qwen_asr_transcription --overwrite
 ```
 
 Uses `float16` on Turing GPUs (e.g. RTX 2070). Requires network on first run to download model weights from Hugging Face.
 
 ---
 
-### Step 3 — `normalize_transcripts.py`
+### Step 3 — `word_error_pipeline.normalize_transcripts`
 
 **What it does:** Pairs each `SPK*_transcript.jsonl` with `SPK*_qwen.jsonl` and writes:
 
@@ -207,23 +208,23 @@ Uses `float16` on Turing GPUs (e.g. RTX 2070). Requires network on first run to 
 Both sides go through the **same normalization track**:
 
 1. **Whisper `BasicTextNormalizer`** on the raw text — lowercases, NFKC, strips punctuation and bracketed tokens. Well-formed **NSV tags** (`[laugh]`, `[breath]`, `[inhale]`, etc.) are removed here (they are not counted as words in WER/CER/WCMR). The original raw text is kept in the `text` field; the cleaned string is in `text_norm`.
-2. **Filler/backchannel stripping** via ``filler_removal.py`` — removes pure hesitation/backchannel vocalizations; segments whose reference is empty after this step are marked `scored: false` (`drop_reason: filler_only`).
+2. **Filler/backchannel stripping** via ``word_error_pipeline/filler_removal.py`` — removes pure hesitation/backchannel vocalizations; segments whose reference is empty after this step are marked `scored: false` (`drop_reason: filler_only`).
 
 Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference is NSV-only, normalization leaves nothing to score → `drop_reason: "empty"`, `scored: false`. Scoring eligibility is decided from the **reference** only, so the two files stay row-aligned.
 
 **Run:**
 
 ```powershell
-.\.venv\Scripts\python.exe normalize_transcripts.py
+python -m word_error_pipeline.normalize_transcripts
 
-.\.venv\Scripts\python.exe normalize_transcripts.py --batch delivery_batch_06092026
+python -m word_error_pipeline.normalize_transcripts --batch delivery_batch_06092026
 
-.\.venv\Scripts\python.exe normalize_transcripts.py --conversation NV-AR-SS03-CONVO09 --file SPK01
+python -m word_error_pipeline.normalize_transcripts --conversation NV-AR-SS03-CONVO09 --file SPK01
 ```
 
 ---
 
-### Step 4 — `rank_error_segments.py`
+### Step 4 — `word_error_pipeline.rank_error_segments`
 
 **What it does:** Joins `SPK*_transcript_norm.jsonl` with `SPK*_qwen_norm.jsonl` on scored rows and ranks segments by absolute error count. Writes `SPK*_top_errors.json` per speaker with the worst segments for manual review.
 
@@ -233,31 +234,31 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 **Run:**
 
 ```powershell
-.\.venv\Scripts\python.exe rank_error_segments.py
+python -m word_error_pipeline.rank_error_segments
 
-.\.venv\Scripts\python.exe rank_error_segments.py --conversation NV-JA-SS04-CONVO11
+python -m word_error_pipeline.rank_error_segments --conversation NV-JA-SS04-CONVO11
 
-.\.venv\Scripts\python.exe rank_error_segments.py --conversation NV-KO-SS03-CONVO07 --file SPK01
+python -m word_error_pipeline.rank_error_segments --conversation NV-KO-SS03-CONVO07 --file SPK01
 
-.\.venv\Scripts\python.exe rank_error_segments.py --top 20 --min-ref-units 5 --overwrite
+python -m word_error_pipeline.rank_error_segments --top 20 --min-ref-units 5 --overwrite
 ```
 
 ---
 
-### Step 5 — `compute_metrics.py`
+### Step 5 — `word_error_pipeline.compute_metrics`
 
 **What it does:** Joins normalized reference and hypothesis by `idx`, keeps `scored == true` rows, and computes WER, CER, and WCMR per speaker and per conversation. Writes `metrics.json` into each conversation folder (includes raw error counts for micro-aggregation).
 
 **Run:**
 
 ```powershell
-.\.venv\Scripts\python.exe compute_metrics.py
+python -m word_error_pipeline.compute_metrics
 
-.\.venv\Scripts\python.exe compute_metrics.py --batch delivery_batch_06092026
+python -m word_error_pipeline.compute_metrics --batch delivery_batch_06092026
 
-.\.venv\Scripts\python.exe compute_metrics.py --conversation NV-AR-SS03-CONVO09
+python -m word_error_pipeline.compute_metrics --conversation NV-AR-SS03-CONVO09
 
-.\.venv\Scripts\python.exe compute_metrics.py --overwrite
+python -m word_error_pipeline.compute_metrics --overwrite
 ```
 
 ---
@@ -269,7 +270,7 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 - **Definitions** — column glossary
 - **One tab per batch** — language summary (cols A–K) and per-conversation table (cols M→) side by side
 - **All Batches** — combined view
-- **top_erroneous_segments** — worst segments per speaker (from `SPK*_top_errors.json`; run `rank_error_segments.py` first)
+- **top_erroneous_segments** — worst segments per speaker (from `SPK*_top_errors.json`; run `word_error_pipeline.rank_error_segments` first)
 - **Reference** — baseline reference numbers per language
 
 Δ columns show human-annotated transcript minus baseline (percentage points), color-coded.
@@ -290,10 +291,11 @@ Each row gets `text_norm`, `scored` (bool), and `drop_reason`. If the reference 
 
 | File | Role |
 |------|------|
-| `run_pipeline.py` | Orchestrator: DetER + full WER pipeline |
+| `run_pipeline.py` | Orchestrator: DetER + overlap + full WER pipeline |
 | `word_error_pipeline/` | WER/CER modules (extract, ASR, normalize, rank, metrics) |
 | `workflow_common.py` | Shared `--batch` / `--conversation` / `--file` argument parsing and file discovery |
 | `diarization_pipeline/` | DetER pipeline (seglst ref RTTM, SAD hypothesis, NeMo scoring) |
+| `conversation_structure_pipeline/` | Overlap ratio and other conversation-structure metrics |
 | `generate_report.py` | Excel report (manual step after metrics) |
 | `copy_delivery_batch.py` | Copy an external delivery batch into `Conversations/` |
 | `download_and_upload_data.py` | Mirror a Google Drive folder into `Conversations/` |
@@ -319,11 +321,11 @@ Or step-by-step:
 
 ```powershell
 python run_pipeline.py --batch delivery_batch_06302026 --skip-wer   # DetER only
-python transcript_extraction.py --batch delivery_batch_06302026
-python qwen_asr_transcription.py --batch delivery_batch_06302026
-python normalize_transcripts.py --batch delivery_batch_06302026
-python rank_error_segments.py --batch delivery_batch_06302026
-python compute_metrics.py --batch delivery_batch_06302026
+python -m word_error_pipeline.transcript_extraction --batch delivery_batch_06302026
+python -m word_error_pipeline.qwen_asr_transcription --batch delivery_batch_06302026
+python -m word_error_pipeline.normalize_transcripts --batch delivery_batch_06302026
+python -m word_error_pipeline.rank_error_segments --batch delivery_batch_06302026
+python -m word_error_pipeline.compute_metrics --batch delivery_batch_06302026
 python generate_report.py --batch delivery_batch_06302026
 ```
 

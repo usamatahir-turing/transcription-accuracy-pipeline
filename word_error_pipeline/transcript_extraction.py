@@ -17,8 +17,8 @@ Notes
 
 Usage
 -----
-    .\.venv\Scripts\python.exe transcript_extraction.py
-    .\.venv\Scripts\python.exe transcript_extraction.py --conversations Conversations
+    python -m word_error_pipeline.transcript_extraction
+    python -m word_error_pipeline.transcript_extraction --batch delivery_batch_06092026
 """
 
 from __future__ import annotations

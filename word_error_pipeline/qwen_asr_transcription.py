@@ -1,7 +1,7 @@
 """Generate Qwen3-ASR hypotheses, row-aligned with the reference transcripts.
 
 For every ``Conversations/<SESSION>/SPK*_transcript.jsonl`` (the reference spine
-produced by ``transcript_extraction.py``) this:
+produced by ``word_error_pipeline.transcript_extraction``) this:
 
   1. loads the sibling ``SPK*.wav`` (the per-speaker channel),
   2. slices it on each reference segment's [start, end] window,
@@ -20,16 +20,16 @@ Key choices (see chat design):
 
 Usage
 -----
-    .\.venv\Scripts\python.exe qwen_asr_transcription.py
-    .\.venv\Scripts\python.exe qwen_asr_transcription.py --limit 1      # smoke test
-    .\.venv\Scripts\python.exe qwen_asr_transcription.py --overwrite
-    .\.venv\Scripts\python.exe qwen_asr_transcription.py --batch-size 8
+    python -m word_error_pipeline.qwen_asr_transcription
+    python -m word_error_pipeline.qwen_asr_transcription --limit 1      # smoke test
+    python -m word_error_pipeline.qwen_asr_transcription --overwrite
+    python -m word_error_pipeline.qwen_asr_transcription --batch-size 8
 
     # whole conversation (all speakers in one session):
-    .\.venv\Scripts\python.exe qwen_asr_transcription.py --conversation NV-KO-SS03-CONVO07
+    python -m word_error_pipeline.qwen_asr_transcription --conversation NV-KO-SS03-CONVO07
 
     # single speaker file (conversation is required):
-    .\.venv\Scripts\python.exe qwen_asr_transcription.py --conversation NV-KO-SS03-CONVO07 --file SPK03
+    python -m word_error_pipeline.qwen_asr_transcription --conversation NV-KO-SS03-CONVO07 --file SPK03
 """
 
 from __future__ import annotations
@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not ref_files:
         print("No SPK*_transcript.jsonl files found for the given scope.")
-        print("Run transcript_extraction.py first.")
+        print("Run word_error_pipeline.transcript_extraction first.")
         return 1
 
     # Plan the work: (ref_path, wav_path, out_path). Skip missing wavs / existing outputs.

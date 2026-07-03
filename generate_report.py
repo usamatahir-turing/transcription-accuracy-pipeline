@@ -6,10 +6,11 @@ Reads ``Conversations/<batch>/<conversation>/metrics.json`` and writes one
   - one worksheet per batch (per-conversation + by-language summary)
   - a final **All Batches** worksheet combining every batch
   - a **top_erroneous_segments** worksheet (worst segments per speaker from
-    ``SPK*_top_errors.json``, produced by ``rank_error_segments.py``)
+    ``SPK*_top_errors.json``, produced by ``word_error_pipeline.rank_error_segments``)
   - a **Definitions** worksheet explaining each metric column
   - a **Reference** worksheet with baseline reference numbers
   - per-batch **DetER** tables (column Y→) from ``deter.json`` when present
+  - per-batch **overlap ratio** tables (after DetER) from ``overlap_ratio.json``
 
 Human-annotated transcript metrics are compared to the independent vendor
 baseline reference. Delta columns show *annotated transcript − baseline* in
@@ -226,6 +227,16 @@ METRIC_DEFINITIONS = [
         "DetER pass ≤ %",
         "Per-channel DetER pass threshold (DER_CH_MAX) from chsep_audio_qa — "
         "10% for isolated speaker channels (language-agnostic).",
+    ),
+    (
+        "Overlap ratio (%)",
+        "T_overlap / T_speech on speech-only seglst segments (NSV-only excluded). "
+        "Higher indicates more simultaneous speech.",
+    ),
+    (
+        "Diff (overlap)",
+        "Overlap ratio % minus the required minimum for that speaker count "
+        "(percentage points). Green when above threshold, red when not.",
     ),
 ]
 
@@ -500,6 +511,90 @@ def build_deter_conv_headers(
         headers.append((spk, spk, "0.00", "deter"))
     headers.append(("Pass", "deter_pass_label", None, False))
     return headers
+
+
+def overlap_threshold_pct(n_speakers: int) -> float:
+    """Minimum required overlap ratio (%) for a conversation to pass."""
+    if n_speakers <= 3:
+        return 5.0
+    if n_speakers <= 5:
+        return 10.0
+    return 12.0
+
+
+def overlap_passes(overlap_ratio_pct: float, n_speakers: int) -> bool:
+    return overlap_ratio_pct > overlap_threshold_pct(n_speakers)
+
+
+OVERLAP_CONV_HEADERS_BASE = [
+    ("Conversation", "session_id", None, False),
+    ("Language", "language", None, False),
+    ("No of speakers", "n_speakers", "#,##0", False),
+    ("Total Audio", "total_audio_min", "0.00", False),
+    ("Speech (min)", "speech_min", "0.00", False),
+    ("Overlap (min)", "overlap_min", "0.00", False),
+    ("Overlap ratio (%)", "overlap_ratio_pct", "0.00", "overlap"),
+    ("Diff", "overlap_diff", "+0.0;-0.0", "overlap"),
+]
+
+
+def build_overlap_conv_headers(*, include_batch: bool = False) -> list[tuple]:
+    headers: list[tuple] = []
+    if include_batch:
+        headers.append(("Batch", "batch", None, False))
+    headers.extend(OVERLAP_CONV_HEADERS_BASE)
+    return headers
+
+
+def load_overlap(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def overlap_to_record(batch: str, data: dict, language: str = "") -> dict:
+    """Flatten ``overlap_ratio.json`` into a report row."""
+    lang = language or derive_language(data.get("session_id", ""))
+    conv = data.get("conversation") or {}
+    n_speakers = conv.get("n_speakers", 0)
+    ratio_pct = conv.get("overlap_ratio_pct")
+    threshold = overlap_threshold_pct(n_speakers)
+    diff = (
+        round(ratio_pct - threshold, 2)
+        if ratio_pct is not None else None
+    )
+    passed = (
+        overlap_passes(ratio_pct, n_speakers)
+        if ratio_pct is not None else None
+    )
+    return {
+        "batch": batch,
+        "session_id": data.get("session_id", ""),
+        "language": lang,
+        "n_speakers": n_speakers,
+        "total_audio_min": round(conv.get("total_audio_s", 0) / 60.0, 2),
+        "speech_min": round(conv.get("speech_s", 0) / 60.0, 2),
+        "overlap_min": round(conv.get("overlap_s", 0) / 60.0, 2),
+        "overlap_ratio_pct": ratio_pct,
+        "overlap_threshold_pct": threshold,
+        "overlap_diff": diff,
+        "overlap_pass": passed,
+    }
+
+
+def discover_overlap_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
+    """Return {batch_name: [overlap rows]} for conversations with overlap_ratio.json."""
+    batches: dict[str, list[dict]] = defaultdict(list)
+    for conv_dir in resolve_conversation_dirs(root, batch, None):
+        overlap_path = conv_dir / "overlap_ratio.json"
+        if not overlap_path.is_file():
+            continue
+        batch_name = conv_dir.parent.name
+        language = derive_language(conv_dir.name)
+        data = load_overlap(overlap_path)
+        batches[batch_name].append(
+            overlap_to_record(batch_name, data, language=language))
+    for batch_name in batches:
+        batches[batch_name].sort(key=lambda r: r["session_id"])
+    return dict(sorted(batches.items()))
 
 
 def discover_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
@@ -794,6 +889,15 @@ def _deter_cell_style(val, key: str) -> tuple[PatternFill | None, Font]:
     return None, FONT_BODY
 
 
+def _overlap_cell_style(record: dict) -> tuple[PatternFill | None, Font]:
+    passed = record.get("overlap_pass")
+    if passed is True:
+        return FILL_DETER_PASS, FONT_DELTA_GOOD
+    if passed is False:
+        return FILL_DETER_FAIL, FONT_DELTA_BAD
+    return None, FONT_BODY
+
+
 def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
                  total_labels: set[str] | None = None,
                  start_col: int = 1) -> int:
@@ -836,6 +940,18 @@ def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
                 elif is_total:
                     cell.fill = FILL_TOTAL
                     cell.font = FONT_TOTAL
+                elif is_alt:
+                    cell.fill = FILL_ALT
+                if fmt and val is not None:
+                    cell.number_format = fmt
+                cell.alignment = (
+                    ALIGN_LEFT if key in text_keys else ALIGN_RIGHT
+                )
+            elif col_kind == "overlap":
+                fill, font = _overlap_cell_style(record)
+                cell.font = font
+                if fill is not None:
+                    cell.fill = fill
                 elif is_alt:
                     cell.fill = FILL_ALT
                 if fmt and val is not None:
@@ -918,17 +1034,33 @@ def _deter_block_cols(conv_headers: list[tuple]) -> tuple[int, int]:
     return gap_col, gap_col + 1
 
 
+def _overlap_block_cols(
+    conv_end_col: int,
+    deter_conv_col: int | None,
+    deter_conv_width: int,
+) -> tuple[int, int]:
+    """Return (gap_col, overlap_col) immediately after the DetER conv table."""
+    if deter_conv_col is not None:
+        gap_col = deter_conv_col + deter_conv_width
+    else:
+        gap_col = conv_end_col + 1
+    return gap_col, gap_col + 1
+
+
 def _write_metrics_sheet(ws, title: str, subtitle: str,
                          conv_headers: list[tuple], conv_records: list[dict],
                          lang_records: list[dict],
                          deter_conv_headers: list[tuple] | None = None,
                          deter_conv_records: list[dict] | None = None,
-                         deter_lang_records: list[dict] | None = None) -> None:
-    """Transcription tables (A→) and optional DetER tables after the conv block."""
+                         deter_lang_records: list[dict] | None = None,
+                         overlap_conv_headers: list[tuple] | None = None,
+                         overlap_conv_records: list[dict] | None = None) -> None:
+    """Transcription tables (A→), optional DetER, optional overlap after DetER."""
     conv_end_col = CONV_COL + len(conv_headers) - 1
     deter_gap_col, deter_lang_col = _deter_block_cols(conv_headers)
     content_end_col = conv_end_col
     deter_conv_col: int | None = None
+    deter_lang_headers: list[tuple] = []
     if deter_conv_headers and deter_conv_records is not None:
         deter_lang_headers = build_deter_lang_headers(
             speaker_columns(deter_conv_records))
@@ -937,6 +1069,15 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         deter_conv_col = deter_mid_gap + 1
         content_end_col = max(
             content_end_col, deter_conv_col + len(deter_conv_headers) - 1)
+
+    overlap_gap_col: int | None = None
+    overlap_col: int | None = None
+    if overlap_conv_headers and overlap_conv_records is not None:
+        deter_width = len(deter_conv_headers) if deter_conv_headers else 0
+        overlap_gap_col, overlap_col = _overlap_block_cols(
+            conv_end_col, deter_conv_col, deter_width)
+        content_end_col = max(
+            content_end_col, overlap_col + len(overlap_conv_headers) - 1)
 
     padded_end_col = content_end_col + TRAILING_PAD_COLS
     row = _write_title_block(ws, title, subtitle, padded_end_col)
@@ -966,6 +1107,12 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
             f"DetER per conversation ({len(deter_conv_records)} session(s))",
             len(deter_conv_headers), start_col=deter_conv_col,
         )
+    if overlap_col is not None and overlap_conv_records is not None:
+        _write_section_header(
+            ws, table_row,
+            f"Overlap per conversation ({len(overlap_conv_records)} session(s))",
+            len(overlap_conv_headers), start_col=overlap_col,
+        )
     row = max(row, table_row + 1)
 
     header_row = row
@@ -989,6 +1136,14 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         _style_gap_column(ws, table_row, data_end - 1, col=deter_gap_col)
         _style_gap_column(ws, table_row, data_end - 1, col=deter_mid_gap)
 
+    if overlap_col is not None and overlap_conv_records is not None:
+        overlap_end = _write_table(
+            ws, row, overlap_conv_headers, overlap_conv_records,
+            start_col=overlap_col)
+        data_end = max(data_end, overlap_end)
+        if overlap_gap_col is not None:
+            _style_gap_column(ws, table_row, data_end - 1, col=overlap_gap_col)
+
     _style_gap_column(ws, table_row, data_end - 1)
 
     ws.freeze_panes = ws.cell(row=header_row + 1, column=LANG_COL)
@@ -999,12 +1154,15 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
     if deter_conv_col is not None and deter_conv_headers is not None:
         col_ranges.append((deter_lang_col, deter_lang_col + len(deter_lang_headers) - 1))
         col_ranges.append((deter_conv_col, deter_conv_col + len(deter_conv_headers) - 1))
+    if overlap_col is not None and overlap_conv_headers is not None:
+        col_ranges.append((overlap_col, overlap_col + len(overlap_conv_headers) - 1))
     _autosize_columns(ws, col_ranges)
     _apply_batch_sheet_scroll_pad(ws, table_row, data_end - 1, content_end_col)
 
 
 def write_batch_sheet(ws, batch_name: str, records: list[dict], generated: str,
-                      deter_records: list[dict] | None = None) -> None:
+                      deter_records: list[dict] | None = None,
+                      overlap_records: list[dict] | None = None) -> None:
     title = f"Batch — {batch_name}"
     subtitle = (
         f"Human-annotated transcript vs Qwen3-ASR  ·  vs baseline reference  ·  "
@@ -1018,15 +1176,23 @@ def write_batch_sheet(ws, batch_name: str, records: list[dict], generated: str,
             "deter_conv_records": deter_records,
             "deter_lang_records": deter_language_summary(deter_records, speaker_cols),
         }
+    overlap_kwargs: dict = {}
+    if overlap_records:
+        overlap_kwargs = {
+            "overlap_conv_headers": build_overlap_conv_headers(),
+            "overlap_conv_records": overlap_records,
+        }
     _write_metrics_sheet(
         ws, title, subtitle,
         CONV_HEADERS, records, language_summary(records),
         **deter_kwargs,
+        **overlap_kwargs,
     )
 
 
 def write_all_batches_sheet(ws, all_records: list[dict], generated: str,
-                            all_deter_records: list[dict] | None = None) -> None:
+                            all_deter_records: list[dict] | None = None,
+                            all_overlap_records: list[dict] | None = None) -> None:
     conv_headers = [("Batch", "batch", None, False)] + list(CONV_HEADERS)
     title = "All batches — combined"
     subtitle = (
@@ -1043,10 +1209,17 @@ def write_all_batches_sheet(ws, all_records: list[dict], generated: str,
             "deter_lang_records": deter_language_summary(
                 all_deter_records, speaker_cols),
         }
+    overlap_kwargs: dict = {}
+    if all_overlap_records:
+        overlap_kwargs = {
+            "overlap_conv_headers": build_overlap_conv_headers(include_batch=True),
+            "overlap_conv_records": all_overlap_records,
+        }
     _write_metrics_sheet(
         ws, title, subtitle,
         conv_headers, all_records, language_summary(all_records),
         **deter_kwargs,
+        **overlap_kwargs,
     )
 
 
@@ -1102,7 +1275,7 @@ def write_top_erroneous_segments_sheet(ws, rows: list[dict], generated: str) -> 
     row = _write_title_block(
         ws,
         "Top erroneous segments",
-        f"Per-speaker worst segments (rank_error_segments.py)  ·  "
+        f"Per-speaker worst segments (word_error_pipeline.rank_error_segments)  ·  "
         f"{len(rows)} row(s)  ·  Generated {generated} UTC",
         padded_end_col,
     )
@@ -1212,8 +1385,10 @@ def write_definitions_sheet(ws) -> None:
 
 def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
                    generated: str,
-                   deter_batches: dict[str, list[dict]] | None = None) -> Workbook:
+                   deter_batches: dict[str, list[dict]] | None = None,
+                   overlap_batches: dict[str, list[dict]] | None = None) -> Workbook:
     deter_batches = deter_batches or {}
+    overlap_batches = overlap_batches or {}
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -1228,28 +1403,37 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
 
     all_records: list[dict] = []
     all_deter_records: list[dict] = []
+    all_overlap_records: list[dict] = []
     for batch_name, records in batches.items():
         all_records.extend(records)
         deter_records = deter_batches.get(batch_name)
         if deter_records:
             all_deter_records.extend(deter_records)
+        overlap_records = overlap_batches.get(batch_name)
+        if overlap_records:
+            all_overlap_records.extend(overlap_records)
 
     if all_records:
         all_records.sort(key=lambda r: (r["batch"], r["session_id"]))
         all_deter = all_deter_records or None
         if all_deter:
             all_deter.sort(key=lambda r: (r["batch"], r["session_id"]))
+        all_overlap = all_overlap_records or None
+        if all_overlap:
+            all_overlap.sort(key=lambda r: (r["batch"], r["session_id"]))
         ws_all = wb.create_sheet(
             title=_safe_sheet_name("All Batches"), index=sheet_idx)
-        write_all_batches_sheet(ws_all, all_records, generated, all_deter)
+        write_all_batches_sheet(ws_all, all_records, generated, all_deter, all_overlap)
         sheet_idx += 1
 
     for batch_name, records in sorted(
         batches.items(), key=lambda item: _batch_sort_key(item[0]),
     ):
         deter_records = deter_batches.get(batch_name)
+        overlap_records = overlap_batches.get(batch_name)
         ws = wb.create_sheet(title=_safe_sheet_name(batch_name), index=sheet_idx)
-        write_batch_sheet(ws, batch_name, records, generated, deter_records)
+        write_batch_sheet(ws, batch_name, records, generated, deter_records,
+                          overlap_records)
         sheet_idx += 1
 
     if top_error_rows:
@@ -1282,10 +1466,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     deter_batches = discover_deter_records(root, args.batch)
+    overlap_batches = discover_overlap_records(root, args.batch)
     top_error_rows = discover_top_error_segments(root, args.batch)
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    wb = build_workbook(batches, top_error_rows, generated, deter_batches)
+    wb = build_workbook(batches, top_error_rows, generated, deter_batches,
+                        overlap_batches)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1293,9 +1479,14 @@ def main(argv: list[str] | None = None) -> int:
 
     n_conv = sum(len(v) for v in batches.values())
     n_deter = sum(len(v) for v in deter_batches.values())
+    n_overlap = sum(len(v) for v in overlap_batches.values())
     deter_note = (
         f" · DetER on {n_deter} conversation(s)"
         if n_deter else " · no deter.json found"
+    )
+    overlap_note = (
+        f" · overlap on {n_overlap} conversation(s)"
+        if n_overlap else " · no overlap_ratio.json found"
     )
     top_note = (
         f" + top_erroneous_segments ({len(top_error_rows)} row(s))"
@@ -1305,7 +1496,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"  Tabs: Definitions, Reference, All Batches, "
         f"{len(batches)} batch tab(s) (newest first)"
-        f"{top_note}  ({n_conv} conversation(s){deter_note})."
+        f"{top_note}  ({n_conv} conversation(s){deter_note}{overlap_note})."
     )
     for batch_name, records in sorted(
         batches.items(), key=lambda item: _batch_sort_key(item[0]),

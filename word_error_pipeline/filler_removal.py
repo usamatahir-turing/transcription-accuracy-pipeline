@@ -352,7 +352,7 @@ def is_filler_only(text: str, lang: str) -> bool:
 def _cli(argv: Iterable[str]) -> int:
     argv = list(argv)
     if len(argv) < 2:
-        print("Usage: filler_removal.py LANG TEXT [TEXT ...]")
+        print("Usage: python -m word_error_pipeline.filler_removal LANG TEXT [TEXT ...]")
         print()
         print("Supported languages:", ", ".join(SUPPORTED_LANGUAGES))
         return 2

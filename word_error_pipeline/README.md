@@ -24,8 +24,6 @@ python -m word_error_pipeline.rank_error_segments --batch delivery_batch_0630202
 python -m word_error_pipeline.compute_metrics --batch delivery_batch_06302026
 ```
 
-Root-level shims (`python transcript_extraction.py`, etc.) delegate to these modules.
-
 ## Full orchestration
 
 Use `run_pipeline.py` at the repo root to run DetER + this pipeline in one command.

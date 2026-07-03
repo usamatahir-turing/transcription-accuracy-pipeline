@@ -22,9 +22,9 @@ Output: one ``metrics.json`` written into each conversation folder.
 
 Usage
 -----
-    .\.venv\Scripts\python.exe compute_metrics.py
-    .\.venv\Scripts\python.exe compute_metrics.py --conversation NV-AR-SS03-CONVO09
-    .\.venv\Scripts\python.exe compute_metrics.py --overwrite
+    python -m word_error_pipeline.compute_metrics
+    python -m word_error_pipeline.compute_metrics --conversation NV-AR-SS03-CONVO09
+    python -m word_error_pipeline.compute_metrics --overwrite
 """
 
 from __future__ import annotations

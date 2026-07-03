@@ -17,10 +17,10 @@ conversation-level WER / CER numerator.
 
 Usage
 -----
-    .\\.venv\\Scripts\\python.exe rank_error_segments.py
-    .\\.venv\\Scripts\\python.exe rank_error_segments.py --conversation NV-JA-SS04-CONVO11
-    .\\.venv\\Scripts\\python.exe rank_error_segments.py --conversation NV-KO-SS03-CONVO07 --file SPK01
-    .\\.venv\\Scripts\\python.exe rank_error_segments.py --top 20 --min-ref-units 5
+    python -m word_error_pipeline.rank_error_segments
+    python -m word_error_pipeline.rank_error_segments --conversation NV-JA-SS04-CONVO11
+    python -m word_error_pipeline.rank_error_segments --conversation NV-KO-SS03-CONVO07 --file SPK01
+    python -m word_error_pipeline.rank_error_segments --top 20 --min-ref-units 5
 """
 
 from __future__ import annotations

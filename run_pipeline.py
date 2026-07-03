@@ -1,9 +1,10 @@
-"""Run DetER + WER pipelines for Conversations data.
+"""Run DetER + WER + overlap pipelines for Conversations data.
 
 Default (full) run:
 
   1. ``diarization_pipeline.deter_calculation`` - DetER scoring
-  2. ``word_error_pipeline`` - extract -> ASR -> normalize -> rank -> metrics
+  2. ``conversation_structure_pipeline.overlap_calculation`` - overlap ratio
+  3. ``word_error_pipeline`` - extract -> ASR -> normalize -> rank -> metrics
 
 ``generate_report.py`` is intentionally excluded; run it manually after metrics exist.
 
@@ -12,6 +13,7 @@ Usage
     python run_pipeline.py --batch delivery_batch_06302026
     python run_pipeline.py --conversation NV-KO-SS03-CONVO07 --skip-deter
     python run_pipeline.py --batch delivery_batch_06302026 --skip-wer
+    python run_pipeline.py --batch delivery_batch_06302026 --skip-deter --skip-wer
 """
 
 from __future__ import annotations
@@ -86,6 +88,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip the WER pipeline (word_error_pipeline).",
     )
     parser.add_argument(
+        "--skip-overlap",
+        action="store_true",
+        help="Skip overlap ratio (conversation_structure_pipeline).",
+    )
+    parser.add_argument(
         "--sad-mode",
         choices=("sortformer", "silero", "union"),
         default="union",
@@ -138,15 +145,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.skip_deter and args.skip_wer:
-        print("ERROR: --skip-deter and --skip-wer cannot both be set.")
+    if args.skip_deter and args.skip_wer and args.skip_overlap:
+        print("ERROR: --skip-deter, --skip-wer, and --skip-overlap cannot all be set.")
         return 1
 
     steps: list[tuple[str, Callable[[list[str] | None], int], list[str]]] = []
+    scope = build_scope_argv(args)
     if not args.skip_deter:
         from diarization_pipeline.deter_calculation import main as deter_main
 
         steps.append(("DetER", deter_main, build_deter_argv(args)))
+    if not args.skip_overlap:
+        from conversation_structure_pipeline.overlap_calculation import (
+            main as overlap_main,
+        )
+
+        steps.append(("overlap ratio", overlap_main, scope))
     if not args.skip_wer:
         from word_error_pipeline.compute_metrics import main as metrics_main
         from word_error_pipeline.normalize_transcripts import main as normalize_main
@@ -154,7 +168,6 @@ def main(argv: list[str] | None = None) -> int:
         from word_error_pipeline.rank_error_segments import main as rank_main
         from word_error_pipeline.transcript_extraction import main as extract_main
 
-        scope = build_scope_argv(args)
         steps.extend(
             [
                 ("transcript extraction", extract_main, scope),
