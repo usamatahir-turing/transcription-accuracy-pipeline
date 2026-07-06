@@ -155,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
         from diarization_pipeline.deter_calculation import main as deter_main
 
         steps.append(("DetER", deter_main, build_deter_argv(args)))
+        from diarization_pipeline.rank_deter_error_segments import (
+            main as rank_deter_main,
+        )
+
+        steps.append(("rank DetER error segments", rank_deter_main, scope))
     if not args.skip_overlap:
         from conversation_structure_pipeline.overlap_calculation import (
             main as overlap_main,

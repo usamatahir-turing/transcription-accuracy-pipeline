@@ -7,6 +7,8 @@ Reads ``Conversations/<batch>/<conversation>/metrics.json`` and writes one
   - a final **All Batches** worksheet combining every batch
   - a **top_erroneous_segments** worksheet (worst segments per speaker from
     ``SPK*_top_errors.json``, produced by ``word_error_pipeline.rank_error_segments``)
+  - a **top_erroneous_segments_deter** worksheet (worst DetER intervals from
+    ``SPK*_top_deter_errors.json``, produced by ``diarization_pipeline.rank_deter_error_segments``)
   - a **Definitions** worksheet explaining each metric column
   - a **Reference** worksheet with baseline reference numbers
   - per-batch **DetER** tables (column Y→) from ``deter.json`` when present
@@ -145,6 +147,55 @@ TOP_ERRORS_TEXT_KEYS = {
     "ref_norm", "hyp_norm", "ref_raw", "hyp_raw",
 }
 TOP_ERRORS_WRAP_KEYS = {"ref_norm", "hyp_norm", "ref_raw", "hyp_raw"}
+
+TOP_DETER_ERRORS_HEADERS = [
+    ("Batch", "batch", None, False),
+    ("Conversation", "session_id", None, False),
+    ("Speaker", "speaker", None, False),
+    ("Language", "language", None, False),
+    ("Error type", "error_type", None, False),
+    ("Rank metric", "rank_metric", None, False),
+    ("Rank", "rank", "#,##0", False),
+    ("Channel DetER %", "channel_deter_pct", "0.00", False),
+    ("Channel pass", "channel_pass_label", None, False),
+    ("SAD mode", "sad_mode", None, False),
+    ("Idx", "idx", "#,##0", False),
+    ("Start (s)", "start", "0.00", False),
+    ("End (s)", "end", "0.00", False),
+    ("Error (s)", "error_s", "0.00", False),
+    ("Ref speech (s)", "ref_speech_s", "0.00", False),
+    ("Hyp coverage (s)", "hyp_coverage_s", "0.00", False),
+    ("Coverage %", "coverage_pct", "0.00", False),
+    ("Words (ref)", "words", None, False),
+]
+
+TOP_DETER_ERRORS_TEXT_KEYS = {
+    "batch", "session_id", "speaker", "language", "error_type", "rank_metric",
+    "channel_pass_label", "sad_mode", "words",
+}
+TOP_DETER_ERRORS_WRAP_KEYS = {"words"}
+
+TOP_DETER_ERRORS_DEFINITIONS = [
+    (
+        "Error type",
+        "missed_detection = annotator speech not covered by SAD; "
+        "false_alarm = SAD speech with no reference speech.",
+    ),
+    (
+        "Rank",
+        "1 = largest contributor of that error type for the speaker "
+        f"(top {10} per type).",
+    ),
+    (
+        "Error (s)",
+        "Seconds contributing to DetER: miss_s for missed detection, "
+        "interval duration for false alarm.",
+    ),
+    (
+        "Channel DetER %",
+        "Whole-channel DetER for context (not per-row).",
+    ),
+]
 
 REF_N_SCORED = {
     "AR": 2352, "GR": 2058, "EN": 3157, "ES": 2799, "FR": 3224,
@@ -652,6 +703,51 @@ def discover_top_error_segments(root: Path, batch: str | None) -> list[dict]:
     return rows
 
 
+def discover_top_deter_error_segments(root: Path, batch: str | None) -> list[dict]:
+    """Flatten every ``SPK*_top_deter_errors.json`` in scope into one row per interval."""
+    rows: list[dict] = []
+    for conv_dir in resolve_conversation_dirs(root, batch, None):
+        batch_name = conv_dir.parent.name
+        for path in sorted(conv_dir.glob("*_top_deter_errors.json")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            session_id = data.get("session_id", conv_dir.name)
+            speaker = data.get("speaker", path.stem.replace("_top_deter_errors", ""))
+            language = data.get("language", derive_language(session_id))
+            channel_deter_pct = data.get("channel_deter_pct")
+            channel_pass = data.get("channel_pass")
+            channel_pass_label = (
+                "PASS" if channel_pass else "FAIL"
+                if channel_pass is not None else "—"
+            )
+            sad_mode = data.get("sad_mode", "")
+            for seg in data.get("segments", []):
+                rows.append({
+                    "batch": batch_name,
+                    "session_id": session_id,
+                    "speaker": speaker,
+                    "language": language,
+                    "error_type": seg.get("error_type", ""),
+                    "rank_metric": seg.get("rank_metric", ""),
+                    "rank": seg.get("rank"),
+                    "channel_deter_pct": channel_deter_pct,
+                    "channel_pass_label": channel_pass_label,
+                    "sad_mode": sad_mode,
+                    "idx": seg.get("idx"),
+                    "start": seg.get("start"),
+                    "end": seg.get("end"),
+                    "error_s": seg.get("error_s"),
+                    "ref_speech_s": seg.get("ref_speech_s"),
+                    "hyp_coverage_s": seg.get("hyp_coverage_s"),
+                    "coverage_pct": seg.get("coverage_pct"),
+                    "words": seg.get("words", ""),
+                })
+    rows.sort(key=lambda r: (
+        r["batch"], r["session_id"], r["speaker"],
+        r.get("error_type", ""), r.get("rank") or 0,
+    ))
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Excel styling
 # ---------------------------------------------------------------------------
@@ -979,9 +1075,15 @@ def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
     return start_row + 1 + len(rows)
 
 
-def _write_top_errors_table(ws, start_row: int, headers: list[tuple],
-                            rows: list[dict]) -> int:
-    """Flat table for top erroneous segments; wrap long transcript columns."""
+def _write_top_errors_table(
+    ws, start_row: int, headers: list[tuple], rows: list[dict], *,
+    text_keys: set[str] | None = None,
+    wrap_keys: set[str] | None = None,
+    pass_label_key: str | None = None,
+) -> int:
+    """Flat table for top erroneous segments; wrap long text columns."""
+    text_keys = text_keys or TOP_ERRORS_TEXT_KEYS
+    wrap_keys = wrap_keys or TOP_ERRORS_WRAP_KEYS
     for i, (label, _, _, _) in enumerate(headers):
         cell = ws.cell(row=start_row, column=1 + i, value=label)
         cell.font = FONT_HEADER
@@ -999,11 +1101,16 @@ def _write_top_errors_table(ws, start_row: int, headers: list[tuple],
             cell = ws.cell(row=r, column=col, value=val)
             cell.border = BORDER
             cell.font = FONT_BODY
-            if is_alt:
+            if pass_label_key and key == pass_label_key and val in ("PASS", "FAIL"):
+                fill, font = _deter_cell_style(val, "deter_pass_label")
+                cell.font = font
+                if fill is not None:
+                    cell.fill = fill
+            elif is_alt:
                 cell.fill = FILL_ALT
-            if key in TOP_ERRORS_WRAP_KEYS:
+            if key in wrap_keys:
                 cell.alignment = wrap
-            elif key in TOP_ERRORS_TEXT_KEYS:
+            elif key in text_keys:
                 cell.alignment = ALIGN_LEFT
             else:
                 cell.alignment = ALIGN_RIGHT
@@ -1315,6 +1422,59 @@ def write_top_erroneous_segments_sheet(ws, rows: list[dict], generated: str) -> 
     _style_trailing_pad(ws, content_end_col)
 
 
+def write_top_erroneous_segments_deter_sheet(
+    ws, rows: list[dict], generated: str,
+) -> None:
+    """Worst DetER intervals per speaker — from SPK*_top_deter_errors.json."""
+    content_end_col = len(TOP_DETER_ERRORS_HEADERS)
+    padded_end_col = _padded_end_col(content_end_col)
+    row = _write_title_block(
+        ws,
+        "Top erroneous segments (DetER)",
+        f"Per-speaker worst SAD vs speech-only seglst intervals  ·  "
+        f"{len(rows)} row(s)  ·  Generated {generated} UTC",
+        padded_end_col,
+    )
+    row += 1
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=padded_end_col)
+    note = ws.cell(
+        row=row, column=1,
+        value=(
+            "Top 10 missed-detection and top 10 false-alarm intervals per speaker "
+            "(rank_deter_error_segments.py). Ranked by error seconds within each "
+            "type. Use Start/End to locate audio in the speaker wav."
+        ),
+    )
+    note.font = FONT_LEGEND
+    note.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws.row_dimensions[row].height = 36
+    row += 1
+
+    header_row = row
+    _write_top_errors_table(
+        ws, row, TOP_DETER_ERRORS_HEADERS, rows,
+        text_keys=TOP_DETER_ERRORS_TEXT_KEYS,
+        wrap_keys=TOP_DETER_ERRORS_WRAP_KEYS,
+        pass_label_key="channel_pass_label",
+    )
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+    col_widths = {
+        "batch": 24,
+        "session_id": 22,
+        "speaker": 14,
+        "language": 8,
+        "error_type": 16,
+        "rank_metric": 12,
+        "sad_mode": 10,
+        "words": 44,
+    }
+    for i, (_, key, _, _) in enumerate(TOP_DETER_ERRORS_HEADERS):
+        letter = get_column_letter(1 + i)
+        ws.column_dimensions[letter].width = col_widths.get(key, 11)
+    _style_trailing_pad(ws, content_end_col)
+
+
 def write_definitions_sheet(ws) -> None:
     """Glossary of metric columns used in the batch / All Batches tabs."""
     content_end_col = 2
@@ -1379,6 +1539,31 @@ def write_definitions_sheet(ws) -> None:
                 d_cell.fill = FILL_ALT
             ws.row_dimensions[r].height = 36
 
+    if TOP_DETER_ERRORS_DEFINITIONS:
+        row = row + 1 + len(TOP_ERRORS_DEFINITIONS) + 1
+        row = _write_section_header(
+            ws, row, "Top erroneous segments (DetER) tab", content_end_col)
+        for col, label in enumerate(("Column", "Definition"), start=1):
+            cell = ws.cell(row=row, column=col, value=label)
+            cell.font = FONT_HEADER
+            cell.fill = FILL_HEADER
+            cell.alignment = ALIGN_CENTER
+            cell.border = BORDER
+        for i, (metric, definition) in enumerate(TOP_DETER_ERRORS_DEFINITIONS):
+            r = row + 1 + i
+            m_cell = ws.cell(row=r, column=1, value=metric)
+            m_cell.font = FONT_BODY
+            m_cell.border = BORDER
+            m_cell.alignment = ALIGN_LEFT
+            d_cell = ws.cell(row=r, column=2, value=definition)
+            d_cell.font = FONT_BODY
+            d_cell.border = BORDER
+            d_cell.alignment = wrap
+            if i % 2 == 1:
+                m_cell.fill = FILL_ALT
+                d_cell.fill = FILL_ALT
+            ws.row_dimensions[r].height = 36
+
     ws.freeze_panes = ws.cell(row=freeze_row, column=1)
     _style_trailing_pad(ws, content_end_col)
 
@@ -1386,7 +1571,8 @@ def write_definitions_sheet(ws) -> None:
 def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
                    generated: str,
                    deter_batches: dict[str, list[dict]] | None = None,
-                   overlap_batches: dict[str, list[dict]] | None = None) -> Workbook:
+                   overlap_batches: dict[str, list[dict]] | None = None,
+                   top_deter_error_rows: list[dict] | None = None) -> Workbook:
     deter_batches = deter_batches or {}
     overlap_batches = overlap_batches or {}
     wb = Workbook()
@@ -1440,6 +1626,12 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
         ws_top = wb.create_sheet(
             title=_safe_sheet_name("top_erroneous_segments"), index=sheet_idx)
         write_top_erroneous_segments_sheet(ws_top, top_error_rows, generated)
+        sheet_idx += 1
+
+    if top_deter_error_rows:
+        ws_deter = wb.create_sheet(
+            title=_safe_sheet_name("top_erroneous_segments_deter"), index=sheet_idx)
+        write_top_erroneous_segments_deter_sheet(ws_deter, top_deter_error_rows, generated)
 
     return wb
 
@@ -1468,10 +1660,13 @@ def main(argv: list[str] | None = None) -> int:
     deter_batches = discover_deter_records(root, args.batch)
     overlap_batches = discover_overlap_records(root, args.batch)
     top_error_rows = discover_top_error_segments(root, args.batch)
+    top_deter_error_rows = discover_top_deter_error_segments(root, args.batch)
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    wb = build_workbook(batches, top_error_rows, generated, deter_batches,
-                        overlap_batches)
+    wb = build_workbook(
+        batches, top_error_rows, generated, deter_batches,
+        overlap_batches, top_deter_error_rows or None,
+    )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1492,11 +1687,15 @@ def main(argv: list[str] | None = None) -> int:
         f" + top_erroneous_segments ({len(top_error_rows)} row(s))"
         if top_error_rows else " (no SPK*_top_errors.json found)"
     )
+    deter_seg_note = (
+        f" + top_erroneous_segments_deter ({len(top_deter_error_rows)} row(s))"
+        if top_deter_error_rows else ""
+    )
     print(f"Wrote {out_path.resolve()}")
     print(
         f"  Tabs: Definitions, Reference, All Batches, "
         f"{len(batches)} batch tab(s) (newest first)"
-        f"{top_note}  ({n_conv} conversation(s){deter_note}{overlap_note})."
+        f"{top_note}{deter_seg_note}  ({n_conv} conversation(s){deter_note}{overlap_note})."
     )
     for batch_name, records in sorted(
         batches.items(), key=lambda item: _batch_sort_key(item[0]),

@@ -9,6 +9,7 @@ DETER_CH_MAX = 0.10
 DEFAULT_COLLAR = 0.25
 SAD_RTTM_SUFFIX = "_sad.rttm"
 TOP_MISSED_SEGMENTS = 20
+TOP_DETER_ERRORS = 10
 
 SadMode = Literal["sortformer", "silero", "union"]
 SAD_MODES: tuple[SadMode, ...] = ("sortformer", "silero", "union")

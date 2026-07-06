@@ -36,6 +36,9 @@ python -m diarization_pipeline.deter_calculation --sad-mode sortformer --convers
 
 # Re-score existing RTTMs
 python -m diarization_pipeline.deter_calculation --score-only --reuse-sad --conversation NV-KO-SS03-CONVO08
+
+# Rank worst DetER intervals for Excel review tab
+python -m diarization_pipeline.rank_deter_error_segments --conversation NV-KO-SS03-CONVO08
 ```
 
 ## Outputs (per conversation folder)
@@ -45,6 +48,7 @@ python -m diarization_pipeline.deter_calculation --score-only --reuse-sad --conv
 | `SPK*_der.rttm` | Speech-only reference from seglst |
 | `SPK*_sad.rttm` | SAD hypothesis (mode selected via `--sad-mode`) |
 | `SPK*_deter.json` | Per-speaker DetER + diagnostics |
+| `SPK*_top_deter_errors.json` | Top 10 missed + top 10 false-alarm intervals per speaker |
 | `deter.json` | Conversation rollup |
 
 Pass threshold: **10% per channel** (`--deter-ch-max 0.10`). Collar: **0.25 s**.

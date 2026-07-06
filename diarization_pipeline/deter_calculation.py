@@ -105,6 +105,7 @@ def score_speaker(
     ref_segs = parse_rttm(ref_rttm)
     hyp_segs = parse_rttm(sad_rttm)
     missed_regions = uncovered_regions(ref_segs, hyp_segs)
+    false_alarm_regions = uncovered_regions(hyp_segs, ref_segs)
     speech_rows = load_speech_seglst_rows(seglst_path)
 
     error_rate = scores["error_rate"]
@@ -126,6 +127,8 @@ def score_speaker(
         "n_ref_segments": len(ref_segs),
         "n_hyp_segments": len(hyp_segs),
         "top_missed_regions": regions_to_json(missed_regions, TOP_MISSED_SEGMENTS),
+        "top_false_alarm_regions": regions_to_json(
+            false_alarm_regions, TOP_MISSED_SEGMENTS),
         "top_missed_seglst_segments": top_missed_seglst_segments(
             speech_rows, hyp_segs, limit=TOP_MISSED_SEGMENTS,
         ),
