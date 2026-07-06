@@ -21,9 +21,11 @@ from diarization_pipeline.common import (
     TOP_MISSED_SEGMENTS,
     parse_rttm,
     regions_to_json,
+    subtract_regions,
     uncovered_regions,
 )
 from diarization_pipeline.deter_calculation import DETER_JSON_SUFFIX
+from diarization_pipeline.seglst_to_rttm import nonspeech_spans
 from workflow_common import add_scope_args, resolve_speaker_files
 
 
@@ -73,10 +75,18 @@ def rank_speaker(deter_path: Path, *, top_n: int) -> dict | None:
         if ref_name and hyp_name:
             ref_path = session_dir / ref_name
             hyp_path = session_dir / hyp_name
+            seglst_path = session_dir / f"{speaker}.seglst.json"
             if ref_path.is_file() and hyp_path.is_file():
+                nsv_spans = (
+                    nonspeech_spans(seglst_path)
+                    if seglst_path.is_file() else []
+                )
                 false_alarms = regions_to_json(
-                    uncovered_regions(
-                        parse_rttm(hyp_path), parse_rttm(ref_path)),
+                    subtract_regions(
+                        uncovered_regions(
+                            parse_rttm(hyp_path), parse_rttm(ref_path)),
+                        nsv_spans,
+                    ),
                     TOP_MISSED_SEGMENTS,
                 )
     false_alarms = sorted(

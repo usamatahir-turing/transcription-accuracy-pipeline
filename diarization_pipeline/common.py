@@ -105,6 +105,62 @@ def uncovered_regions(
     return [(s, e) for s, e in missed if e - s > 1e-6]
 
 
+def subtract_regions(
+    regions: list[tuple[float, float]],
+    holes: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Remove ``holes`` from ``regions`` (for UEM-aligned false-alarm diagnostics)."""
+    if not regions:
+        return []
+    if not holes:
+        return list(regions)
+    holes_m = merge_segments(holes)
+    out: list[tuple[float, float]] = []
+    for rs, re in regions:
+        parts = [(rs, re)]
+        for hs, he in holes_m:
+            next_parts: list[tuple[float, float]] = []
+            for ps, pe in parts:
+                if pe <= hs or ps >= he:
+                    next_parts.append((ps, pe))
+                else:
+                    if ps < hs:
+                        next_parts.append((ps, hs))
+                    if pe > he:
+                        next_parts.append((he, pe))
+            parts = next_parts
+        out.extend((s, e) for s, e in parts if e - s > 1e-6)
+    return out
+
+
+def build_nsv_uem(
+    ref_labels: list[str],
+    hyp_labels: list[str],
+    nsv_spans: list[tuple[float, float]],
+):
+    """Pyannote UEM = [0, T] minus NSV spans (no-score zones)."""
+    merged = merge_segments(nsv_spans)
+    if not merged:
+        return None
+    from pyannote.core import Segment, Timeline
+
+    def _max_end(labels: list[str]) -> float:
+        return max((float(label.split()[1]) for label in labels), default=0.0)
+
+    end_t = max(_max_end(ref_labels), _max_end(hyp_labels), merged[-1][1])
+    scored: list[tuple[float, float]] = []
+    cur = 0.0
+    for start, end in merged:
+        start = max(0.0, start)
+        end = min(end_t, end)
+        if start > cur:
+            scored.append((cur, start))
+        cur = max(cur, end)
+    if cur < end_t:
+        scored.append((cur, end_t))
+    return Timeline([Segment(s, e) for s, e in scored if e > s])
+
+
 def interval_coverage(
     interval: tuple[float, float],
     haystack: list[tuple[float, float]],
@@ -122,8 +178,13 @@ def score_deter(
     hyp_labels: list[str],
     uniq_id: str,
     collar: float = DEFAULT_COLLAR,
+    uem=None,
 ) -> dict:
-    """Score DetER via NeMo ``der.score_labels`` (pyannote engine)."""
+    """Score DetER via NeMo ``der.score_labels`` (pyannote engine).
+
+    When ``uem`` is set, regions outside the UEM (e.g. NSV-only seglst turns)
+    are excluded from missed/false-alarm accounting.
+    """
     if not ref_labels:
         raise ValueError("empty reference speech timeline")
 
@@ -136,6 +197,7 @@ def score_deter(
         {uniq_id: {}},
         [(uniq_id, ref_ann)],
         [(uniq_id, hyp_ann)],
+        all_uem=([uem] if uem is not None else None),
         collar=collar,
         ignore_overlap=False,
         verbose=False,

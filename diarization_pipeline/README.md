@@ -52,3 +52,8 @@ python -m diarization_pipeline.rank_deter_error_segments --conversation NV-KO-SS
 | `deter.json` | Conversation rollup |
 
 Pass threshold: **10% per channel** (`--deter-ch-max 0.10`). Collar: **0.25 s**.
+
+NSV-only seglst turns (`[laugh]`, `[inhale]`, …) are excluded from DetER scoring
+via a UEM (un-partitioned evaluation map), matching `chsep_audio_qa` with
+`--deter_uem_exclude_nsv`. VAD firing on those intervals is neither a false alarm
+nor a miss.

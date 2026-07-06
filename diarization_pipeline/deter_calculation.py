@@ -21,17 +21,25 @@ from diarization_pipeline.common import (
     DEFAULT_COLLAR,
     TOP_MISSED_SEGMENTS,
     SadMode,
+    build_nsv_uem,
+    merge_segments,
     parse_rttm,
     regions_to_json,
     rttm_to_speech_labels,
     sad_mode_description,
     sad_rttm_path,
     score_deter,
+    subtract_regions,
     top_missed_seglst_segments,
     uncovered_regions,
 )
 from diarization_pipeline.sad_hypothesis import add_sad_mode_arg, wav_sample_rate, write_sad_rttm
-from diarization_pipeline.seglst_to_rttm import convert_seglst, der_rttm_path, load_speech_seglst_rows
+from diarization_pipeline.seglst_to_rttm import (
+    convert_seglst,
+    der_rttm_path,
+    load_speech_seglst_rows,
+    nonspeech_spans,
+)
 from workflow_common import add_scope_args, resolve_conversation_dirs
 
 DETER_JSON_SUFFIX = "_deter.json"
@@ -93,9 +101,13 @@ def score_speaker(
         print(f"    WARN {speaker}: empty reference RTTM")
         return None
     hyp_labels = rttm_to_speech_labels(sad_rttm)
+    nsv_spans = nonspeech_spans(seglst_path)
+    uem = build_nsv_uem(ref_labels, hyp_labels, nsv_spans)
     uniq_id = f"{seglst_path.parent.name}_{speaker}"
     try:
-        scores = score_deter(ref_labels, hyp_labels, uniq_id, collar=collar)
+        scores = score_deter(
+            ref_labels, hyp_labels, uniq_id, collar=collar, uem=uem,
+        )
     except ValueError as exc:
         print(f"    WARN {speaker}: scoring failed ({exc})")
         return None
@@ -105,7 +117,9 @@ def score_speaker(
     ref_segs = parse_rttm(ref_rttm)
     hyp_segs = parse_rttm(sad_rttm)
     missed_regions = uncovered_regions(ref_segs, hyp_segs)
-    false_alarm_regions = uncovered_regions(hyp_segs, ref_segs)
+    false_alarm_regions = subtract_regions(
+        uncovered_regions(hyp_segs, ref_segs), nsv_spans,
+    )
     speech_rows = load_speech_seglst_rows(seglst_path)
 
     error_rate = scores["error_rate"]
@@ -131,6 +145,11 @@ def score_speaker(
             false_alarm_regions, TOP_MISSED_SEGMENTS),
         "top_missed_seglst_segments": top_missed_seglst_segments(
             speech_rows, hyp_segs, limit=TOP_MISSED_SEGMENTS,
+        ),
+        "uem_exclude_nsv": True,
+        "n_nsv_spans": len(nsv_spans),
+        "nsv_excluded_s": round(
+            sum(e - s for s, e in merge_segments(nsv_spans)), 3,
         ),
     }
     if sad_stats:
@@ -235,7 +254,8 @@ def process_conversation(
             "metric": "DetER",
             "description": (
                 "Detection error rate: SAD hypothesis vs speech-only seglst reference, "
-                "flattened to one speaker (no speaker confusion)."
+                "flattened to one speaker (no speaker confusion). NSV-only turns "
+                "([laugh], [inhale], …) are excluded from scoring via a UEM."
             ),
             "sad_mode": sad_mode,
             "hypothesis": sad_mode_description(sad_mode),

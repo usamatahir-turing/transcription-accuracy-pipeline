@@ -75,6 +75,30 @@ def convert_seglst(
     return kept, dropped
 
 
+def nonspeech_spans(
+    seglst_path: Path,
+    speech_tags: frozenset[str] = DEFAULT_SPEECH_TAGS,
+) -> list[tuple[float, float]]:
+    """``(start, end)`` of turns dropped by :func:`convert_seglst` (NSV-only).
+
+    Used to build a DetER UEM so VAD on audible laughter/breath in those
+    intervals is neither a false alarm nor a miss.
+    """
+    segs = json.loads(seglst_path.read_text(encoding="utf-8-sig"))
+    spans: list[tuple[float, float]] = []
+    for seg in segs:
+        if is_speech_segment(seg.get("words", ""), speech_tags):
+            continue
+        try:
+            start = float(seg["start_time"])
+            end = float(seg["end_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end > start:
+            spans.append((start, end))
+    return spans
+
+
 def load_speech_seglst_rows(
     seglst_path: Path,
     speech_tags: frozenset[str] = DEFAULT_SPEECH_TAGS,
