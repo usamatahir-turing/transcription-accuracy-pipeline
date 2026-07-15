@@ -22,8 +22,10 @@ import soundfile as sf
 from diarization_pipeline.common import (
     SAD_MODES,
     SadMode,
+    channel_id_from_path,
     merge_segments,
     sad_rttm_path,
+    speaker_output_name,
     write_rttm,
 )
 from workflow_common import add_scope_args, resolve_speaker_files
@@ -197,7 +199,8 @@ def write_sad_rttm(
     batch_size: int = 1,
 ) -> dict:
     stats = run_sad(audio_path, declared_sr, mode=mode, batch_size=batch_size)
-    write_rttm(stats["segments"], out_path, file_id=audio_path.stem, speaker_label="speech")
+    file_id = speaker_output_name(channel_id_from_path(audio_path))
+    write_rttm(stats["segments"], out_path, file_id=file_id, speaker_label="speech")
     return stats
 
 
@@ -222,8 +225,9 @@ def main(argv: list[str] | None = None) -> int:
 
     n_done = n_skipped = n_fail = 0
     for seglst_path in seglst_files:
-        speaker = seglst_path.name.split(".seglst.json")[0]
-        wav_path = seglst_path.with_name(f"{speaker}.wav")
+        channel_id = channel_id_from_path(seglst_path)
+        speaker = speaker_output_name(channel_id)
+        wav_path = seglst_path.with_name(f"{channel_id}.wav")
         out_path = sad_rttm_path(seglst_path)
         if out_path.exists() and not args.overwrite:
             n_skipped += 1

@@ -34,6 +34,20 @@ def derive_language(session_id: str) -> str:
     return parts[1] if len(parts) >= 2 else ""
 
 
+def _resolve_seglst_for_speaker(session_dir: Path, speaker: str, channel_id: str | None) -> Path | None:
+    """Find seglst for an output speaker label (handles ``@turing.com`` inputs)."""
+    candidates = []
+    if channel_id:
+        candidates.append(session_dir / f"{channel_id}.seglst.json")
+    candidates.append(session_dir / f"{speaker}.seglst.json")
+    if not speaker.endswith("@turing.com"):
+        candidates.append(session_dir / f"{speaker}@turing.com.seglst.json")
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
 def rank_speaker(deter_path: Path, *, top_n: int) -> dict | None:
     data = json.loads(deter_path.read_text(encoding="utf-8"))
     deter = data.get("deter") or {}
@@ -41,6 +55,7 @@ def rank_speaker(deter_path: Path, *, top_n: int) -> dict | None:
     session_dir = deter_path.parent
     session_id = session_dir.name
     speaker = data.get("speaker", deter_path.name[: -len(DETER_JSON_SUFFIX)])
+    channel_id = data.get("channel_id")
     language = derive_language(session_id)
 
     segments: list[dict] = []
@@ -75,11 +90,11 @@ def rank_speaker(deter_path: Path, *, top_n: int) -> dict | None:
         if ref_name and hyp_name:
             ref_path = session_dir / ref_name
             hyp_path = session_dir / hyp_name
-            seglst_path = session_dir / f"{speaker}.seglst.json"
+            seglst_path = _resolve_seglst_for_speaker(session_dir, speaker, channel_id)
             if ref_path.is_file() and hyp_path.is_file():
                 nsv_spans = (
                     nonspeech_spans(seglst_path)
-                    if seglst_path.is_file() else []
+                    if seglst_path is not None else []
                 )
                 false_alarms = regions_to_json(
                     subtract_regions(

@@ -57,3 +57,8 @@ NSV-only seglst turns (`[laugh]`, `[inhale]`, …) are excluded from DetER scori
 via a UEM (un-partitioned evaluation map), matching `chsep_audio_qa` with
 `--deter_uem_exclude_nsv`. VAD firing on those intervals is neither a false alarm
 nor a miss.
+
+Email-style channel files (`daiki.m2@turing.com.seglst.json`) keep the full name
+for `.wav` / `.seglst.json` inputs, but DetER outputs use the local part before
+`@turing.com` (`daiki.m2_der.rttm`, `daiki.m2_sad.rttm`, …) so speakers like
+`daiki.m2` and `daiki.i` do not collide.

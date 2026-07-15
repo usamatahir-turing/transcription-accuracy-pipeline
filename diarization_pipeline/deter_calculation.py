@@ -22,6 +22,7 @@ from diarization_pipeline.common import (
     TOP_MISSED_SEGMENTS,
     SadMode,
     build_nsv_uem,
+    channel_id_from_path,
     merge_segments,
     parse_rttm,
     regions_to_json,
@@ -29,6 +30,7 @@ from diarization_pipeline.common import (
     sad_mode_description,
     sad_rttm_path,
     score_deter,
+    speaker_output_name,
     subtract_regions,
     top_missed_seglst_segments,
     uncovered_regions,
@@ -46,12 +48,17 @@ DETER_JSON_SUFFIX = "_deter.json"
 
 
 def deter_json_path(seglst_path: Path) -> Path:
-    speaker = seglst_path.name.split(".seglst.json")[0]
+    speaker = speaker_output_name(channel_id_from_path(seglst_path))
     return seglst_path.with_name(f"{speaker}{DETER_JSON_SUFFIX}")
 
 
+def _channel_id_from_seglst(seglst_path: Path) -> str:
+    return channel_id_from_path(seglst_path)
+
+
 def _speaker_from_seglst(seglst_path: Path) -> str:
-    return seglst_path.name.split(".seglst.json")[0]
+    """Output speaker label (``@turing.com`` stripped when present)."""
+    return speaker_output_name(channel_id_from_path(seglst_path))
 
 
 def ensure_ref_rttm(seglst_path: Path, *, overwrite: bool) -> Path | None:
@@ -72,8 +79,9 @@ def ensure_sad_rttm(
     batch_size: int,
     sad_mode: SadMode,
 ) -> tuple[Path | None, dict | None]:
+    channel_id = _channel_id_from_seglst(seglst_path)
     speaker = _speaker_from_seglst(seglst_path)
-    wav_path = seglst_path.with_name(f"{speaker}.wav")
+    wav_path = seglst_path.with_name(f"{channel_id}.wav")
     out = sad_rttm_path(seglst_path)
     if out.exists() and not overwrite:
         return out, None
@@ -95,6 +103,7 @@ def score_speaker(
     sad_mode: SadMode,
     sad_stats: dict | None = None,
 ) -> dict | None:
+    channel_id = _channel_id_from_seglst(seglst_path)
     speaker = _speaker_from_seglst(seglst_path)
     ref_labels = rttm_to_speech_labels(ref_rttm)
     if not ref_labels:
@@ -125,6 +134,7 @@ def score_speaker(
     error_rate = scores["error_rate"]
     result: dict = {
         "speaker": speaker,
+        "channel_id": channel_id,
         "deter": {
             "error_rate": round(error_rate, 6),
             "error_rate_pct": round(error_rate * 100, 2),

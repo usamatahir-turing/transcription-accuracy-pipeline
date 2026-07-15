@@ -14,11 +14,38 @@ TOP_DETER_ERRORS = 10
 SadMode = Literal["sortformer", "silero", "union"]
 SAD_MODES: tuple[SadMode, ...] = ("sortformer", "silero", "union")
 
+# Email-style channel IDs (e.g. daiki.m2@turing.com) collapse to the local-part
+# for output filenames so daiki.m2 vs daiki.i do not collide on daiki_sad.rttm.
+_TURING_EMAIL_SUFFIX = "@turing.com"
+
+
+def channel_id_from_path(path: Path) -> str:
+    """Full channel stem used for input files (``*.seglst.json``, ``*.wav``).
+
+    ``daiki.m2@turing.com.seglst.json`` → ``daiki.m2@turing.com``
+    ``SPK01.wav`` → ``SPK01``
+    """
+    name = path.name
+    if name.endswith(".seglst.json"):
+        return name[: -len(".seglst.json")]
+    return path.stem
+
+
+def speaker_output_name(channel_id: str) -> str:
+    """Speaker label / output stem: strip ``@turing.com`` when present.
+
+    ``daiki.m2@turing.com`` → ``daiki.m2``
+    ``SPK01`` → ``SPK01``
+    """
+    if channel_id.endswith(_TURING_EMAIL_SUFFIX):
+        return channel_id[: -len(_TURING_EMAIL_SUFFIX)]
+    return channel_id
+
 
 def sad_rttm_path(speaker_wav_or_seglst: Path) -> Path:
-    """``SPK01.wav`` or ``SPK01.seglst.json`` -> ``SPK01_sad.rttm``."""
-    stem = speaker_wav_or_seglst.name.split(".")[0]
-    return speaker_wav_or_seglst.with_name(f"{stem}{SAD_RTTM_SUFFIX}")
+    """``SPK01.wav`` / ``daiki.m2@turing.com.seglst.json`` → ``…_sad.rttm``."""
+    out = speaker_output_name(channel_id_from_path(speaker_wav_or_seglst))
+    return speaker_wav_or_seglst.with_name(f"{out}{SAD_RTTM_SUFFIX}")
 
 
 def parse_rttm(rttm_path: Path) -> list[tuple[float, float]]:

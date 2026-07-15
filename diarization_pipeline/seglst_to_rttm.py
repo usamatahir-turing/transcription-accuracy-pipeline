@@ -8,6 +8,7 @@ import re
 import unicodedata
 from pathlib import Path
 
+from diarization_pipeline.common import channel_id_from_path, speaker_output_name
 from workflow_common import add_scope_args, resolve_speaker_files
 
 DEFAULT_SPEECH_TAGS = frozenset(
@@ -35,7 +36,7 @@ def is_speech_segment(words: str, speech_tags: frozenset[str] = DEFAULT_SPEECH_T
 
 
 def der_rttm_path(seglst_path: Path) -> Path:
-    speaker = seglst_path.name.split(".seglst.json")[0]
+    speaker = speaker_output_name(channel_id_from_path(seglst_path))
     return seglst_path.with_name(f"{speaker}{DER_RTTM_SUFFIX}")
 
 
@@ -49,7 +50,7 @@ def convert_seglst(
     """Write speech-only RTTM. Returns (n_kept, n_dropped)."""
     segs = json.loads(seglst_path.read_text(encoding="utf-8-sig"))
     if file_id is None:
-        file_id = seglst_path.name.split(".seglst.json")[0]
+        file_id = speaker_output_name(channel_id_from_path(seglst_path))
     kept = dropped = 0
     rttm_path.parent.mkdir(parents=True, exist_ok=True)
     with rttm_path.open("w", encoding="utf-8") as fh:
