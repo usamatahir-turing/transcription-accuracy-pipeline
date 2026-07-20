@@ -51,8 +51,9 @@ python -m audio_quality_pipeline.export_dnsmos_csv --batch delivery_batch_071420
 ```
 
 Writes `audio_quality_pipeline/reports/dnsmos_channels.csv` with columns:
-`batch, session_id, speaker, sig, bak, ovrl, pass, speech_min, peak_dbfs`
-(sorted worst SIG first). Use `-o` to change the path.
+`batch, session_id, file_name, sig, bak, ovrl, pass, speech_min, peak_dbfs`
+(sorted worst SIG first). `file_name` is the channel WAV (e.g. `SPK01.wav`).
+Use `-o` to change the path.
 
 ---
 

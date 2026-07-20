@@ -1,6 +1,6 @@
 """Export a lean per-channel DNSMOS CSV from ``*_dnsmos.json`` files.
 
-Columns: batch, session_id, speaker, sig, bak, ovrl, pass, speech_min, peak_dbfs
+Columns: batch, session_id, file_name, sig, bak, ovrl, pass, speech_min, peak_dbfs
 
 Usage
 -----
@@ -25,7 +25,7 @@ DEFAULT_OUT = Path(__file__).resolve().parent / "reports" / "dnsmos_channels.csv
 COLUMNS = (
     "batch",
     "session_id",
-    "speaker",
+    "file_name",
     "sig",
     "bak",
     "ovrl",
@@ -44,10 +44,14 @@ def row_from_dnsmos_json(path: Path, batch: str) -> dict | None:
 
     dnsmos = data.get("dnsmos") or {}
     diag = data.get("diagnostics") or {}
+    file_name = data.get("wav")
+    if not file_name:
+        channel_id = data.get("channel_id") or path.name.removesuffix(DNSMOS_JSON_SUFFIX)
+        file_name = f"{channel_id}.wav"
     return {
         "batch": batch,
         "session_id": data.get("session_id") or path.parent.name,
-        "speaker": data.get("speaker") or path.name.removesuffix(DNSMOS_JSON_SUFFIX),
+        "file_name": file_name,
         "sig": dnsmos.get("sig"),
         "bak": dnsmos.get("bak"),
         "ovrl": dnsmos.get("ovrl"),
@@ -99,14 +103,14 @@ def main(argv: list[str] | None = None) -> int:
         session_dirs = session_dirs[: args.limit]
 
     rows = collect_rows(session_dirs)
-    # Stable sort: worst SIG first (None last), then batch / session / speaker.
+    # Stable sort: worst SIG first (None last), then batch / session / file.
     rows.sort(
         key=lambda r: (
             r["sig"] is None,
             r["sig"] if r["sig"] is not None else 0.0,
             r["batch"] or "",
             r["session_id"] or "",
-            r["speaker"] or "",
+            r["file_name"] or "",
         )
     )
 
