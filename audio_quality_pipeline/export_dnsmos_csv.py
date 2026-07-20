@@ -103,11 +103,9 @@ def main(argv: list[str] | None = None) -> int:
         session_dirs = session_dirs[: args.limit]
 
     rows = collect_rows(session_dirs)
-    # Stable sort: worst SIG first (None last), then batch / session / file.
+    # Sort by batch, session, file_name for stable browsing.
     rows.sort(
         key=lambda r: (
-            r["sig"] is None,
-            r["sig"] if r["sig"] is not None else 0.0,
             r["batch"] or "",
             r["session_id"] or "",
             r["file_name"] or "",

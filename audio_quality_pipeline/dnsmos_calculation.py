@@ -1,4 +1,8 @@
-"""DNSMOS P.835 pipeline: score each speaker channel (speech-masked).
+"""DNSMOS P.835 pipeline: score each speaker channel (speech-timeline masked).
+
+Default (calibrated to client report Worst-100 SIG):
+  - Window: speech seglst on the full timeline (non-speech zeroed; NSV-only dropped)
+  - Polyfit: Microsoft personalized (``dnsmos_local.py -p``)
 
 Per speaker writes ``{speaker}_dnsmos.json``; per conversation writes ``dnsmos.json``.
 
@@ -6,7 +10,7 @@ Usage
 -----
     python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-KO-SS15-CONVO34
     python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026
-    python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026 --overwrite
+    python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07012026 --overwrite
 """
 
 from __future__ import annotations
@@ -20,12 +24,27 @@ from audio_quality_pipeline.dnsmos_p835 import (
     score_audio,
     session_device,
 )
-from audio_quality_pipeline.speech_windows import extract_speech_audio
+from audio_quality_pipeline.speech_windows import (
+    extract_speech_audio,
+    extract_speech_timeline_audio,
+)
 from diarization_pipeline.common import channel_id_from_path, speaker_output_name
 from workflow_common import add_scope_args, resolve_conversation_dirs
 
 DNSMOS_JSON_SUFFIX = "_dnsmos.json"
 DNSMOS_ROLLUP = "dnsmos.json"
+
+WINDOW_SPEECH_TIMELINE = "speech_timeline"
+WINDOW_SPEECH_CONCAT = "speech_concat"
+WINDOW_FULL = "full"
+
+SPEECH_MASK_LABELS = {
+    WINDOW_SPEECH_TIMELINE: (
+        "speech seglst on full timeline (non-speech zeroed; NSV-only excluded)"
+    ),
+    WINDOW_SPEECH_CONCAT: "speech-only seglst concat (NSV-only excluded)",
+    WINDOW_FULL: "full channel WAV (no seglst mask)",
+}
 
 
 def dnsmos_json_path(seglst_path: Path) -> Path:
@@ -33,7 +52,36 @@ def dnsmos_json_path(seglst_path: Path) -> Path:
     return seglst_path.with_name(f"{speaker}{DNSMOS_JSON_SUFFIX}")
 
 
-def score_speaker(seglst_path: Path) -> dict | None:
+def _load_window(wav_path: Path, seglst_path: Path, window: str) -> dict:
+    if window == WINDOW_SPEECH_TIMELINE:
+        return extract_speech_timeline_audio(wav_path, seglst_path)
+    if window == WINDOW_SPEECH_CONCAT:
+        return extract_speech_audio(wav_path, seglst_path)
+    if window == WINDOW_FULL:
+        from audio_quality_pipeline.speech_windows import load_mono_wav, peak_dbfs
+
+        audio, sr = load_mono_wav(wav_path)
+        speech = extract_speech_audio(wav_path, seglst_path)
+        return {
+            "audio": audio,
+            "sample_rate": sr,
+            "speech_s": speech["speech_s"],
+            "speech_min": speech["speech_min"],
+            "peak_dbfs": peak_dbfs(audio) if audio.size else None,
+            "n_speech_segments": speech["n_speech_segments"],
+            "n_samples": speech["n_samples"],
+            "file_s": round(len(audio) / sr, 3) if sr else 0.0,
+            "mode": WINDOW_FULL,
+        }
+    raise ValueError(f"unknown window mode: {window}")
+
+
+def score_speaker(
+    seglst_path: Path,
+    *,
+    window: str = WINDOW_SPEECH_TIMELINE,
+    personalized: bool = True,
+) -> dict | None:
     channel_id = channel_id_from_path(seglst_path)
     speaker = speaker_output_name(channel_id)
     wav_path = seglst_path.with_name(f"{channel_id}.wav")
@@ -41,15 +89,26 @@ def score_speaker(seglst_path: Path) -> dict | None:
         print(f"    SKIP {speaker}: no {wav_path.name}")
         return None
 
-    window = extract_speech_audio(wav_path, seglst_path)
-    if window["n_samples"] < 1600:  # < 0.1 s at 16 kHz after resample floor
-        print(f"    WARN {speaker}: too little speech ({window['speech_s']}s)")
+    win = _load_window(wav_path, seglst_path, window)
+    if win["n_samples"] < 1600:  # < 0.1 s of speech
+        print(f"    WARN {speaker}: too little speech ({win['speech_s']}s)")
         return None
 
-    scores = score_audio(window["audio"], window["sample_rate"])
+    scores = score_audio(
+        win["audio"], win["sample_rate"], personalized=personalized)
     flags: list[str] = []
     if not scores["pass"]:
         flags.append("sig_below_3.0")
+
+    diagnostics = {
+        "speech_s": win["speech_s"],
+        "speech_min": win["speech_min"],
+        "peak_dbfs": win["peak_dbfs"],
+        "n_speech_segments": win["n_speech_segments"],
+        "sample_rate": win["sample_rate"],
+    }
+    if "file_s" in win:
+        diagnostics["file_s"] = win["file_s"]
 
     return {
         "session_id": seglst_path.parent.name,
@@ -66,25 +125,28 @@ def score_speaker(seglst_path: Path) -> dict | None:
             "n_hops": scores["n_hops"],
             "pass": scores["pass"],
             "threshold_sig": scores["threshold_sig"],
+            "personalized": scores["personalized"],
         },
-        "diagnostics": {
-            "speech_s": window["speech_s"],
-            "speech_min": window["speech_min"],
-            "peak_dbfs": window["peak_dbfs"],
-            "n_speech_segments": window["n_speech_segments"],
-            "sample_rate": window["sample_rate"],
-        },
+        "diagnostics": diagnostics,
         "flags": flags,
         "method": {
             "metric": "DNSMOS_P835",
-            "speech_mask": "speech-only seglst (NSV-only excluded)",
+            "speech_mask": SPEECH_MASK_LABELS[window],
+            "window": window,
+            "personalized": personalized,
             "model": "sig_bak_ovr.onnx",
             "device": scores["device"],
         },
     }
 
 
-def process_conversation(session_dir: Path, *, overwrite: bool) -> dict | None:
+def process_conversation(
+    session_dir: Path,
+    *,
+    overwrite: bool,
+    window: str,
+    personalized: bool,
+) -> dict | None:
     seglst_files = sorted(session_dir.glob("*.seglst.json"))
     if not seglst_files:
         return None
@@ -99,7 +161,8 @@ def process_conversation(session_dir: Path, *, overwrite: bool) -> dict | None:
             print(f"    SKIP {speaker}: {out_path.name} exists")
             continue
         try:
-            result = score_speaker(seglst_path)
+            result = score_speaker(
+                seglst_path, window=window, personalized=personalized)
         except Exception as exc:  # noqa: BLE001
             print(f"    FAIL {speaker}: {exc}")
             continue
@@ -128,10 +191,13 @@ def process_conversation(session_dir: Path, *, overwrite: bool) -> dict | None:
         "method": {
             "metric": "DNSMOS_P835",
             "description": (
-                "DNSMOS P.835 SIG/BAK/OVRL on speech-only seglst windows "
+                "DNSMOS P.835 SIG/BAK/OVRL with speech-timeline mask and "
+                f"{'personalized' if personalized else 'non-personalized'} polyfit "
                 f"(SIG > {SIG_WARN_MIN} warning threshold)."
             ),
-            "speech_mask": "speech-only seglst (NSV-only excluded)",
+            "speech_mask": SPEECH_MASK_LABELS[window],
+            "window": window,
+            "personalized": personalized,
             "threshold_sig": SIG_WARN_MIN,
             "device": session_device(),
         },
@@ -151,7 +217,22 @@ def process_conversation(session_dir: Path, *, overwrite: bool) -> dict | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_scope_args(parser, with_file=False)
+    parser.add_argument(
+        "--window",
+        choices=(WINDOW_SPEECH_TIMELINE, WINDOW_SPEECH_CONCAT, WINDOW_FULL),
+        default=WINDOW_SPEECH_TIMELINE,
+        help=(
+            "Audio window for DNSMOS (default: speech_timeline). "
+            "speech_concat = old tight concat; full = entire WAV."
+        ),
+    )
+    parser.add_argument(
+        "--non-personalized",
+        action="store_true",
+        help="Use non-personalized polyfit (Microsoft default without -p).",
+    )
     args = parser.parse_args(argv)
+    personalized = not args.non_personalized
 
     root = Path(args.conversations)
     try:
@@ -171,7 +252,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  SKIP {session_dir.name}: {DNSMOS_ROLLUP} exists")
             continue
         try:
-            result = process_conversation(session_dir, overwrite=args.overwrite)
+            result = process_conversation(
+                session_dir,
+                overwrite=args.overwrite,
+                window=args.window,
+                personalized=personalized,
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"  FAIL {session_dir.name}: {exc}")
             n_fail += 1

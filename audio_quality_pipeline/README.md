@@ -29,13 +29,19 @@ Weights download into `audio_quality_pipeline/models/` on first run.
 | Item | Behaviour |
 |------|-----------|
 | Inputs | Individual speaker `*.wav` next to `*.seglst.json` |
-| Speech mask | Speech-only seglst (NSV-only dropped; same as DetER) |
+| Speech mask (default) | **Speech timeline**: keep full file length, zero non-speech seglst gaps (NSV-only dropped) |
+| Polyfit (default) | **Personalized** (Microsoft `dnsmos_local.py -p`) |
 | Pass rule | `SIG > 3.0` |
 | Mixed tracks | Not scored in v1 |
+
+Defaults were calibrated against client-report Worst-100 SIG (Batch 4 fails).
+Overrides: `--window speech_concat|speech_timeline|full`, `--non-personalized`.
 
 ```powershell
 python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-KO-SS15-CONVO34
 python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026 --overwrite
+# previous behaviour:
+python -m audio_quality_pipeline.dnsmos_calculation --window speech_concat --non-personalized --overwrite
 ```
 
 | Output | Role |
@@ -52,8 +58,8 @@ python -m audio_quality_pipeline.export_dnsmos_csv --batch delivery_batch_071420
 
 Writes `audio_quality_pipeline/reports/dnsmos_channels.csv` with columns:
 `batch, session_id, file_name, sig, bak, ovrl, pass, speech_min, peak_dbfs`
-(sorted worst SIG first). `file_name` is the channel WAV (e.g. `SPK01.wav`).
-Use `-o` to change the path.
+(sorted by batch, session_id, file_name). `file_name` is the channel WAV
+(e.g. `SPK01.wav`). Use `-o` to change the path.
 
 ---
 

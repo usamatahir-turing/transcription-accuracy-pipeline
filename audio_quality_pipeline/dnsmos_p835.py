@@ -1,7 +1,9 @@
 """DNSMOS P.835 (SIG / BAK / OVRL) via Microsoft's ``sig_bak_ovr.onnx``.
 
-Inference follows ``microsoft/DNS-Challenge`` ``DNSMOS/dnsmos_local.py``
-(non-personalized polyfit). Uses ``onnxruntime`` with CUDA when available.
+Inference follows ``microsoft/DNS-Challenge`` ``DNSMOS/dnsmos_local.py``.
+Default polyfit is **personalized** (``-p`` in the Microsoft script), which
+matched client-report SIG best with speech-timeline masking.
+Uses ``onnxruntime`` with CUDA when available.
 """
 
 from __future__ import annotations
@@ -25,7 +27,12 @@ _MODEL_URLS = (
 _MODEL_DIR = Path(__file__).resolve().parent / "models"
 _MODEL_NAME = "sig_bak_ovr.onnx"
 
-# Non-personalized polyfit (DNSMOS P.835 paper / dnsmos_local.py).
+# Personalized polyfit (dnsmos_local.py ``is_personalized_MOS=True``).
+_P_SIG_PERS = np.poly1d([-0.01019296, 0.02751166, 1.19576786, -0.24348726])
+_P_BAK_PERS = np.poly1d([-0.04976499, 0.44276479, -0.1644611, 0.96883132])
+_P_OVR_PERS = np.poly1d([-0.00533021, 0.005101, 1.18058466, -0.11236046])
+
+# Non-personalized polyfit (dnsmos_local.py default).
 _P_SIG = np.poly1d([-0.08397278, 1.22083953, 0.0052439])
 _P_BAK = np.poly1d([-0.13166888, 1.60915514, -0.39604546])
 _P_OVR = np.poly1d([-0.06766283, 1.11546468, 0.04602535])
@@ -122,7 +129,19 @@ def session_device() -> str:
     return _session_device
 
 
-def _polyfit(sig_raw: float, bak_raw: float, ovr_raw: float) -> tuple[float, float, float]:
+def _polyfit(
+    sig_raw: float,
+    bak_raw: float,
+    ovr_raw: float,
+    *,
+    personalized: bool,
+) -> tuple[float, float, float]:
+    if personalized:
+        return (
+            float(_P_SIG_PERS(sig_raw)),
+            float(_P_BAK_PERS(bak_raw)),
+            float(_P_OVR_PERS(ovr_raw)),
+        )
     return float(_P_SIG(sig_raw)), float(_P_BAK(bak_raw)), float(_P_OVR(ovr_raw))
 
 
@@ -131,11 +150,15 @@ def score_audio(
     sample_rate: int,
     *,
     model_path: Path | None = None,
+    personalized: bool = True,
 ) -> dict:
     """Score a mono float waveform with DNSMOS P.835.
 
     Returns mean SIG/BAK/OVRL over 9.01 s hops (1 s hop), plus raw means and
     hop count. Audio shorter than 9.01 s is repeated (Microsoft script behaviour).
+
+    ``personalized=True`` uses the cubic polyfit from Microsoft ``dnsmos_local.py
+    -p`` (default here after client-report calibration).
     """
     if audio.ndim > 1:
         audio = np.mean(audio, axis=-1)
@@ -169,7 +192,9 @@ def score_audio(
 
     for idx in range(num_hops):
         start = int(idx * hop_len)
-        end = int((idx + INPUT_LENGTH) * hop_len)
+        end = start + len_samples
+        if end > len(audio):
+            break
         seg = audio[start:end]
         if len(seg) < len_samples:
             continue
@@ -177,7 +202,11 @@ def score_audio(
         mos_sig_raw, mos_bak_raw, mos_ovr_raw = sess.run(
             None, {"input_1": feats})[0][0]
         mos_sig, mos_bak, mos_ovr = _polyfit(
-            float(mos_sig_raw), float(mos_bak_raw), float(mos_ovr_raw))
+            float(mos_sig_raw),
+            float(mos_bak_raw),
+            float(mos_ovr_raw),
+            personalized=personalized,
+        )
         sig_raw_l.append(float(mos_sig_raw))
         bak_raw_l.append(float(mos_bak_raw))
         ovr_raw_l.append(float(mos_ovr_raw))
@@ -192,7 +221,11 @@ def score_audio(
         mos_sig_raw, mos_bak_raw, mos_ovr_raw = sess.run(
             None, {"input_1": feats})[0][0]
         mos_sig, mos_bak, mos_ovr = _polyfit(
-            float(mos_sig_raw), float(mos_bak_raw), float(mos_ovr_raw))
+            float(mos_sig_raw),
+            float(mos_bak_raw),
+            float(mos_ovr_raw),
+            personalized=personalized,
+        )
         sig_l = [mos_sig]
         bak_l = [mos_bak]
         ovr_l = [mos_ovr]
@@ -213,5 +246,6 @@ def score_audio(
         "n_hops": len(sig_l),
         "pass": sig > SIG_WARN_MIN,
         "threshold_sig": SIG_WARN_MIN,
+        "personalized": personalized,
         "device": session_device(),
     }
