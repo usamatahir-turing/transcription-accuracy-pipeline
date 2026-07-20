@@ -18,6 +18,7 @@ PIPELINE_OUTPUT_EXACT_NAMES = frozenset({
     "metrics.json",
     "overlap_ratio.json",
     "dnsmos.json",
+    "bandwidth.json",
 })
 PIPELINE_OUTPUT_SUFFIXES = (
     "_der.rttm",
@@ -30,6 +31,8 @@ PIPELINE_OUTPUT_SUFFIXES = (
     "_transcript_norm.jsonl",
     "_transcript.jsonl",
     "_dnsmos.json",
+    "_bandwidth.json",
+    "_bandwidth_spectrogram.png",
 )
 
 

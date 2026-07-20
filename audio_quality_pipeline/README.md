@@ -1,8 +1,13 @@
-# Audio quality pipeline — DNSMOS P.835
+# Audio quality pipeline
 
-Perceptual speech quality screening (**SIG** / **BAK** / **OVRL**) matching the
-client review methodology in `sample_review_report_delivery0701_0707_2026.md`
-§3.2.
+Client review methodology from `sample_review_report_delivery0701_0707_2026.md`:
+
+| Module | Report section | Metric |
+|--------|----------------|--------|
+| `dnsmos_calculation` | §3.2 | DNSMOS P.835 SIG / BAK / OVRL |
+| `bandwidth_calculation` | §3.3 | Effective bandwidth (LTAS cutoff) |
+
+Neither module is wired into `run_pipeline.py` yet — run them separately.
 
 ## Install
 
@@ -10,55 +15,70 @@ client review methodology in `sample_review_report_delivery0701_0707_2026.md`
 .\.venv\Scripts\pip.exe install -r audio_quality_pipeline\requirements.txt
 ```
 
-Uses **Microsoft DNSMOS P.835** (`sig_bak_ovr.onnx`) via `onnxruntime-gpu`
-when CUDA is available (falls back to CPU otherwise). The ONNX weights download
-automatically into `audio_quality_pipeline/models/` on first run.
+### DNSMOS GPU notes
 
-Install with `pip install -r audio_quality_pipeline/requirements.txt` so the
-`[cuda,cudnn]` extras (CUDA 12 wheels) are present. On first score you should
-see `CUDAExecutionProvider` in the provider list. If CUDA still fails to load,
-scoring falls back to CPU.
+Uses Microsoft DNSMOS P.835 (`sig_bak_ovr.onnx`) via `onnxruntime-gpu`.
+Install with the `[cuda,cudnn]` extras (CUDA 12 wheels). On first score you should
+see `CUDAExecutionProvider`. If CUDA fails to load, scoring falls back to CPU.
+Weights download into `audio_quality_pipeline/models/` on first run.
 
-## What is scored
+---
+
+## DNSMOS P.835
 
 | Item | Behaviour |
 |------|-----------|
 | Inputs | Individual speaker `*.wav` next to `*.seglst.json` |
-| Speech mask | Speech-only seglst (same `is_speech_segment` as DetER; NSV-only dropped) |
-| Pass rule | `SIG > 3.0` (warning threshold from the review report) |
+| Speech mask | Speech-only seglst (NSV-only dropped; same as DetER) |
+| Pass rule | `SIG > 3.0` |
 | Mixed tracks | Not scored in v1 |
 
-## Usage
-
 ```powershell
-# One conversation
 python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-KO-SS15-CONVO34
-
-# Whole batch
-python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026
-
-# Force re-score
 python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026 --overwrite
 ```
+
+| Output | Role |
+|--------|------|
+| `{speaker}_dnsmos.json` | Per-channel SIG/BAK/OVRL + diagnostics |
+| `dnsmos.json` | Conversation rollup |
+
+---
+
+## Effective bandwidth (§3.3)
+
+Estimates the highest frequency with **sustained** speech energy (median LTAS
+over speech frames, contiguous ~300 Hz band ≥12 dB above the HF noise floor).
+This is **not** the max FFT bin with any energy.
+
+| Item | Behaviour |
+|------|-----------|
+| Inputs | Same speech-masked channels as DNSMOS |
+| Pass rule | `effective_hz > 8000` (severe ≤8 kHz group fails) |
+| Buckets | `le_8khz` / `le_12khz` / `le_16khz` / `gt_16khz` |
+| Spectrograms | `{speaker}_bandwidth_spectrogram.png` (skip with `--no-spectrogram`) |
+
+```powershell
+python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15
+python -m audio_quality_pipeline.bandwidth_calculation --batch delivery_batch_07142026 --overwrite
+python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15 --no-spectrogram
+```
+
+| Output | Role |
+|--------|------|
+| `{speaker}_bandwidth.json` | `effective_hz`, bucket, flags, method |
+| `{speaker}_bandwidth_spectrogram.png` | Log-power STFT for listening review |
+| `bandwidth.json` | Rollup: `n_le_8khz` / `n_le_12khz` / `n_le_16khz` (nested counts like the report) |
+
+### How to analyze
+
+1. Count `bucket == le_8khz` (and nested ≤12 / ≤16) across a batch — same style as the report table.
+2. Join with DNSMOS on `speaker` / `session_id` (bandwidth defects often sit near SIG≈3.0).
+3. Open spectrogram PNGs for `le_8khz` channels; confirm a dark band above ~8 kHz.
+4. Flag sessions where any speaker fails (`conversation.pass == false`).
 
 Scope flags match the rest of the repo (`--conversations`, `--batch`,
 `--conversation` repeatable, `--overwrite`, `--limit`).
 
-**Not** wired into `run_pipeline.py` yet — run this module separately.
-
-## Outputs (per conversation folder)
-
-| File | Role |
-|------|------|
-| `{speaker}_dnsmos.json` | Per-channel SIG/BAK/OVRL + speech diagnostics |
-| `dnsmos.json` | Conversation rollup (means, fail counts) |
-
-Example per-channel fields: `dnsmos.sig` / `bak` / `ovrl`, `diagnostics.speech_min`,
-`diagnostics.peak_dbfs`, `flags` (e.g. `sig_below_3.0`).
-
-## Notes
-
-- DNSMOS does **not** produce bandwidth spectrograms or localize clipping; those
-  are separate analyses in the client report.
-- Email-style channel IDs (`ha.c1@turing.com`) use the same output naming as
-  DetER (`ha.c1_dnsmos.json`); the WAV is still read as `ha.c1@turing.com.wav`.
+Email-style channel IDs (`ha.c1@turing.com`) use the same output naming as DetER
+(`ha.c1_bandwidth.json`); the WAV is still read as `ha.c1@turing.com.wav`.
