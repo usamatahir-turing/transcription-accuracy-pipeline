@@ -43,6 +43,17 @@ python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142
 | `{speaker}_dnsmos.json` | Per-channel SIG/BAK/OVRL + diagnostics |
 | `dnsmos.json` | Conversation rollup |
 
+### Export CSV
+
+```powershell
+python -m audio_quality_pipeline.export_dnsmos_csv
+python -m audio_quality_pipeline.export_dnsmos_csv --batch delivery_batch_07142026
+```
+
+Writes `audio_quality_pipeline/reports/dnsmos_channels.csv` with columns:
+`batch, session_id, speaker, sig, bak, ovrl, pass, speech_min, peak_dbfs`
+(sorted worst SIG first). Use `-o` to change the path.
+
 ---
 
 ## Effective bandwidth (§3.3)
