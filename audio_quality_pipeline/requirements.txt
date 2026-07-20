@@ -1,0 +1,14 @@
+# DNSMOS P.835 (install on top of repo root requirements.txt).
+#
+#   pip install -r audio_quality_pipeline/requirements.txt
+#
+# onnxruntime-gpu[cuda,cudnn] pulls NVIDIA CUDA 12 / cuDNN wheels so GPU works
+# without a system CUDA toolkit. ORT 1.26 is the last PyPI build whose
+# cuda,cudnn extras resolve cleanly on Windows; 1.27 expects system CUDA 13.
+# Fall back to CPU with: pip install onnxruntime
+
+onnxruntime-gpu[cuda,cudnn]==1.26.0
+librosa
+soundfile
+numpy
+requests
