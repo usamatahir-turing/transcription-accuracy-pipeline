@@ -1,19 +1,18 @@
-"""Export per-channel effective-bandwidth CSV; upload spectrogram PNGs to Drive.
+"""Export a single per-channel CSV joining DNSMOS + effective bandwidth.
 
-Columns: batch, session_id, file_name, effective_hz, bucket, pass, speech_min,
-peak_dbfs, spectrogram_url
+Columns: batch, session_id, file_name, sig, bak, ovrl, dnsmos_pass,
+effective_hz, bucket, bandwidth_pass, speech_min, peak_dbfs, spectrogram_url
 
-Drive uploads use the same service-account impersonation as
-``download_and_upload_data.py``. Remote PNG names are
-``{batch}__{session_id}__{png_basename}`` to avoid collisions. Existing Drive
-files are skipped unless ``--overwrite-drive``.
+One row per channel (WAV). Missing ``*_dnsmos.json`` or ``*_bandwidth.json``
+leaves the corresponding metric cells empty. Spectrogram PNGs upload to Drive
+(same SA auth as ``download_and_upload_data.py``) unless ``--skip-upload``.
 
 Usage
 -----
-    python -m audio_quality_pipeline.export_bandwidth_csv
-    python -m audio_quality_pipeline.export_bandwidth_csv --batch delivery_batch_07012026
-    python -m audio_quality_pipeline.export_bandwidth_csv --overwrite-drive
-    python -m audio_quality_pipeline.export_bandwidth_csv --skip-upload
+    python -m audio_quality_pipeline.export_audio_quality_csv
+    python -m audio_quality_pipeline.export_audio_quality_csv --batch delivery_batch_07012026
+    python -m audio_quality_pipeline.export_audio_quality_csv --overwrite-drive
+    python -m audio_quality_pipeline.export_audio_quality_csv --skip-upload
 """
 
 from __future__ import annotations
@@ -26,18 +25,23 @@ from pathlib import Path
 
 from workflow_common import add_scope_args, resolve_conversation_dirs
 
+DNSMOS_JSON_SUFFIX = "_dnsmos.json"
 BANDWIDTH_JSON_SUFFIX = "_bandwidth.json"
 SPECTROGRAM_SUFFIX = "_bandwidth_spectrogram.png"
-DEFAULT_OUT = Path(__file__).resolve().parent / "reports" / "bandwidth_channels.csv"
+DEFAULT_OUT = Path(__file__).resolve().parent / "reports" / "audio_quality_channels.csv"
 DEFAULT_DRIVE_FOLDER_ID = "1oTljr07Q6Sjj1x6UwCBf7b3r3c3d8jTC"
 
 COLUMNS = (
     "batch",
     "session_id",
     "file_name",
+    "sig",
+    "bak",
+    "ovrl",
+    "dnsmos_pass",
     "effective_hz",
     "bucket",
-    "pass",
+    "bandwidth_pass",
     "speech_min",
     "peak_dbfs",
     "spectrogram_url",
@@ -53,7 +57,6 @@ def remote_png_name(batch: str, session_id: str, png_name: str) -> str:
 
 
 def list_drive_files_by_name(drive_service, folder_id: str) -> dict[str, str]:
-    """Return ``{file_name: file_id}`` for non-trashed files in ``folder_id``."""
     out: dict[str, str] = {}
     page_token = None
     while True:
@@ -87,7 +90,6 @@ def upload_or_update_png(
     existing_id: str | None,
     overwrite: bool,
 ) -> tuple[str, str]:
-    """Upload PNG; return ``(file_id, action)`` where action is uploaded|updated|skipped."""
     from googleapiclient.http import MediaFileUpload
 
     media = MediaFileUpload(
@@ -132,12 +134,13 @@ def ensure_spectrogram_urls(
     skip_upload: bool,
     overwrite_drive: bool,
 ) -> dict[str, int]:
-    """Fill ``spectrogram_url`` on each row. Returns upload stats."""
     stats = {"uploaded": 0, "updated": 0, "skipped": 0, "missing_local": 0, "errors": 0}
 
     if skip_upload:
         for row in rows:
             row["spectrogram_url"] = ""
+            row.pop("_png_path", None)
+            row.pop("_remote_png_name", None)
         return stats
 
     from download_and_upload_data import get_authenticated_drive_service
@@ -146,7 +149,6 @@ def ensure_spectrogram_urls(
     existing = list_drive_files_by_name(drive, drive_folder_id)
     print(f"Drive folder has {len(existing)} existing file(s).")
 
-    # Cache remote_name -> url within this run.
     url_by_remote: dict[str, str] = {}
 
     for row in rows:
@@ -191,62 +193,118 @@ def ensure_spectrogram_urls(
     return stats
 
 
-def row_from_bandwidth_json(path: Path, batch: str) -> dict | None:
+def _empty_row(batch: str, session_id: str, file_name: str) -> dict:
+    return {
+        "batch": batch,
+        "session_id": session_id,
+        "file_name": file_name,
+        "sig": None,
+        "bak": None,
+        "ovrl": None,
+        "dnsmos_pass": None,
+        "effective_hz": None,
+        "bucket": None,
+        "bandwidth_pass": None,
+        "speech_min": None,
+        "peak_dbfs": None,
+        "spectrogram_url": "",
+        "_png_path": None,
+        "_remote_png_name": None,
+    }
+
+
+def _wav_from_json(data: dict, path: Path, suffix: str) -> str:
+    file_name = data.get("wav")
+    if file_name:
+        return file_name
+    channel_id = data.get("channel_id") or path.name.removesuffix(suffix)
+    return f"{channel_id}.wav"
+
+
+def _merge_dnsmos(row: dict, path: Path) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  WARN skip {path}: {exc}")
-        return None
+        return
+    dnsmos = data.get("dnsmos") or {}
+    diag = data.get("diagnostics") or {}
+    row["sig"] = dnsmos.get("sig")
+    row["bak"] = dnsmos.get("bak")
+    row["ovrl"] = dnsmos.get("ovrl")
+    row["dnsmos_pass"] = dnsmos.get("pass")
+    if row.get("speech_min") is None:
+        row["speech_min"] = diag.get("speech_min")
+    if row.get("peak_dbfs") is None:
+        row["peak_dbfs"] = diag.get("peak_dbfs")
 
+
+def _merge_bandwidth(row: dict, path: Path, batch: str) -> None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  WARN skip {path}: {exc}")
+        return
     bw = data.get("bandwidth") or {}
     diag = data.get("diagnostics") or {}
     artifacts = data.get("artifacts") or {}
-    file_name = data.get("wav")
-    if not file_name:
-        channel_id = data.get("channel_id") or path.name.removesuffix(BANDWIDTH_JSON_SUFFIX)
-        file_name = f"{channel_id}.wav"
-
     session_id = data.get("session_id") or path.parent.name
+
+    row["effective_hz"] = bw.get("effective_hz")
+    row["bucket"] = bw.get("bucket")
+    row["bandwidth_pass"] = bw.get("pass")
+    if row.get("speech_min") is None:
+        row["speech_min"] = diag.get("speech_min")
+    if row.get("peak_dbfs") is None:
+        row["peak_dbfs"] = diag.get("peak_dbfs")
+
     png_name = artifacts.get("spectrogram_png")
     png_path = path.parent / png_name if png_name else None
     if png_path is None or not png_path.is_file():
-        # Fallback naming if JSON omitted artifact but PNG exists.
         speaker = data.get("speaker") or path.name.removesuffix(BANDWIDTH_JSON_SUFFIX)
         candidate = path.parent / f"{speaker}{SPECTROGRAM_SUFFIX}"
         if candidate.is_file():
             png_path = candidate
             png_name = candidate.name
 
-    remote = (
-        remote_png_name(batch, session_id, png_name)
-        if png_name
-        else None
-    )
-
-    return {
-        "batch": batch,
-        "session_id": session_id,
-        "file_name": file_name,
-        "effective_hz": bw.get("effective_hz"),
-        "bucket": bw.get("bucket"),
-        "pass": bw.get("pass"),
-        "speech_min": diag.get("speech_min"),
-        "peak_dbfs": diag.get("peak_dbfs"),
-        "spectrogram_url": "",
-        "_png_path": str(png_path) if png_path and png_path.is_file() else None,
-        "_remote_png_name": remote,
-    }
+    if png_name and png_path and png_path.is_file():
+        row["_png_path"] = str(png_path)
+        row["_remote_png_name"] = remote_png_name(batch, session_id, png_name)
 
 
 def collect_rows(session_dirs: list[Path]) -> list[dict]:
-    rows: list[dict] = []
+    """Join DNSMOS + bandwidth JSONs on (batch, session, wav file_name)."""
+    rows_by_key: dict[tuple[str, str, str], dict] = {}
+
     for session_dir in session_dirs:
         batch = session_dir.parent.name
+        session_id = session_dir.name
+
+        for path in sorted(session_dir.glob(f"*{DNSMOS_JSON_SUFFIX}")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"  WARN skip {path}: {exc}")
+                continue
+            file_name = _wav_from_json(data, path, DNSMOS_JSON_SUFFIX)
+            key = (batch, data.get("session_id") or session_id, file_name)
+            if key not in rows_by_key:
+                rows_by_key[key] = _empty_row(key[0], key[1], key[2])
+            _merge_dnsmos(rows_by_key[key], path)
+
         for path in sorted(session_dir.glob(f"*{BANDWIDTH_JSON_SUFFIX}")):
-            row = row_from_bandwidth_json(path, batch)
-            if row is not None:
-                rows.append(row)
-    return rows
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"  WARN skip {path}: {exc}")
+                continue
+            file_name = _wav_from_json(data, path, BANDWIDTH_JSON_SUFFIX)
+            key = (batch, data.get("session_id") or session_id, file_name)
+            if key not in rows_by_key:
+                rows_by_key[key] = _empty_row(key[0], key[1], key[2])
+            _merge_bandwidth(rows_by_key[key], path, batch)
+
+    return list(rows_by_key.values())
 
 
 def write_csv(rows: list[dict], out_path: Path) -> None:
@@ -313,10 +371,15 @@ def main(argv: list[str] | None = None) -> int:
 
     out_path = Path(args.output)
     write_csv(rows, out_path)
-    n_fail = sum(1 for r in rows if r.get("pass") is False)
+
+    n_dnsmos = sum(1 for r in rows if r.get("sig") is not None)
+    n_bw = sum(1 for r in rows if r.get("effective_hz") is not None)
+    n_dnsmos_fail = sum(1 for r in rows if r.get("dnsmos_pass") is False)
+    n_bw_fail = sum(1 for r in rows if r.get("bandwidth_pass") is False)
     print(
         f"\nWrote {len(rows)} channel row(s) to {out_path} "
-        f"({n_fail} with pass=False)."
+        f"(dnsmos={n_dnsmos}, bandwidth={n_bw}, "
+        f"dnsmos_fail={n_dnsmos_fail}, bandwidth_fail={n_bw_fail})."
     )
     if not args.skip_upload:
         print(

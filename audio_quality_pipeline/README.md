@@ -49,17 +49,23 @@ python -m audio_quality_pipeline.dnsmos_calculation --window speech_concat --non
 | `{speaker}_dnsmos.json` | Per-channel SIG/BAK/OVRL + diagnostics |
 | `dnsmos.json` | Conversation rollup |
 
-### Export CSV
+### Export CSV (DNSMOS + bandwidth, one sheet)
 
 ```powershell
-python -m audio_quality_pipeline.export_dnsmos_csv
-python -m audio_quality_pipeline.export_dnsmos_csv --batch delivery_batch_07142026
+python -m audio_quality_pipeline.export_audio_quality_csv
+python -m audio_quality_pipeline.export_audio_quality_csv --batch delivery_batch_07012026
+python -m audio_quality_pipeline.export_audio_quality_csv --overwrite-drive
+python -m audio_quality_pipeline.export_audio_quality_csv --skip-upload
 ```
 
-Writes `audio_quality_pipeline/reports/dnsmos_channels.csv` with columns:
-`batch, session_id, file_name, sig, bak, ovrl, pass, speech_min, peak_dbfs`
-(sorted by batch, session_id, file_name). `file_name` is the channel WAV
-(e.g. `SPK01.wav`). Use `-o` to change the path.
+Writes `audio_quality_pipeline/reports/audio_quality_channels.csv` with columns:
+`batch, session_id, file_name, sig, bak, ovrl, dnsmos_pass, effective_hz, bucket,
+bandwidth_pass, speech_min, peak_dbfs, spectrogram_url`
+
+One row per channel WAV. If only DNSMOS or only bandwidth JSON exists, the other
+metric cells are left empty. Spectrogram PNGs upload to Drive folder
+`1oTljr07Q6Sjj1x6UwCBf7b3r3c3d8jTC` (same SA as `download_and_upload_data.py`).
+Remote names: `{batch}__{session}__{png}`. Skip existing unless `--overwrite-drive`.
 
 ---
 
@@ -88,30 +94,12 @@ python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08
 | `{speaker}_bandwidth_spectrogram.png` | Log-power STFT for listening review |
 | `bandwidth.json` | Rollup: `n_le_8khz` / `n_le_12khz` / `n_le_16khz` (nested counts like the report) |
 
-### Export CSV (+ Drive spectrogram links)
-
-```powershell
-python -m audio_quality_pipeline.export_bandwidth_csv
-python -m audio_quality_pipeline.export_bandwidth_csv --batch delivery_batch_07012026
-python -m audio_quality_pipeline.export_bandwidth_csv --overwrite-drive
-python -m audio_quality_pipeline.export_bandwidth_csv --skip-upload
-```
-
-Writes `audio_quality_pipeline/reports/bandwidth_channels.csv` with columns:
-`batch, session_id, file_name, effective_hz, bucket, pass, speech_min, peak_dbfs, spectrogram_url`
-
-Spectrogram PNGs upload to Drive folder `1oTljr07Q6Sjj1x6UwCBf7b3r3c3d8jTC`
-(same SA auth as `download_and_upload_data.py`). Remote names are
-`{batch}__{session}__{png}`. Existing Drive files are skipped unless
-`--overwrite-drive`. Use `--skip-upload` for a local-only CSV (empty URLs).
-
 ### How to analyze
 
 1. Count `bucket == le_8khz` (and nested ≤12 / ≤16) across a batch — same style as the report table.
-2. Join with DNSMOS on `speaker` / `session_id` (bandwidth defects often sit near SIG≈3.0).
-3. Open spectrogram PNGs for `le_8khz` channels; confirm a dark band above ~8 kHz.
-4. Flag sessions where any speaker fails (`conversation.pass == false`).
-
+2. Sort / filter by `sig` and `effective_hz` in the shared CSV (bandwidth defects often sit near SIG≈3.0).
+3. Open `spectrogram_url` (or local PNG) for `le_8khz` channels; confirm a dark band above ~8 kHz.
+4. Flag sessions where any speaker fails DNSMOS or bandwidth.
 Scope flags match the rest of the repo (`--conversations`, `--batch`,
 `--conversation` repeatable, `--overwrite`, `--limit`).
 
