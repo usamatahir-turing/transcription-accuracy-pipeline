@@ -88,6 +88,23 @@ python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08
 | `{speaker}_bandwidth_spectrogram.png` | Log-power STFT for listening review |
 | `bandwidth.json` | Rollup: `n_le_8khz` / `n_le_12khz` / `n_le_16khz` (nested counts like the report) |
 
+### Export CSV (+ Drive spectrogram links)
+
+```powershell
+python -m audio_quality_pipeline.export_bandwidth_csv
+python -m audio_quality_pipeline.export_bandwidth_csv --batch delivery_batch_07012026
+python -m audio_quality_pipeline.export_bandwidth_csv --overwrite-drive
+python -m audio_quality_pipeline.export_bandwidth_csv --skip-upload
+```
+
+Writes `audio_quality_pipeline/reports/bandwidth_channels.csv` with columns:
+`batch, session_id, file_name, effective_hz, bucket, pass, speech_min, peak_dbfs, spectrogram_url`
+
+Spectrogram PNGs upload to Drive folder `1oTljr07Q6Sjj1x6UwCBf7b3r3c3d8jTC`
+(same SA auth as `download_and_upload_data.py`). Remote names are
+`{batch}__{session}__{png}`. Existing Drive files are skipped unless
+`--overwrite-drive`. Use `--skip-upload` for a local-only CSV (empty URLs).
+
 ### How to analyze
 
 1. Count `bucket == le_8khz` (and nested ≤12 / ≤16) across a batch — same style as the report table.
