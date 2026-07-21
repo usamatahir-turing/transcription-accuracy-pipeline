@@ -42,6 +42,9 @@ python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-KO-SS15-CO
 python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026 --overwrite
 # previous behaviour:
 python -m audio_quality_pipeline.dnsmos_calculation --window speech_concat --non-personalized --overwrite
+
+# WAVs in another tree (e.g. riverside_raw); seglst from Conversations (skip if missing)
+python -m audio_quality_pipeline.dnsmos_calculation --conversations riverside_raw --batch delivery_batch_07012026 --seglst-root Conversations --overwrite
 ```
 
 | Output | Role |
@@ -65,7 +68,16 @@ bandwidth_pass, speech_min, peak_dbfs, spectrogram_url`
 One row per channel WAV. If only DNSMOS or only bandwidth JSON exists, the other
 metric cells are left empty. Spectrogram PNGs upload to Drive folder
 `1oTljr07Q6Sjj1x6UwCBf7b3r3c3d8jTC` (same SA as `download_and_upload_data.py`).
-Remote names: `{batch}__{session}__{png}`. Skip existing unless `--overwrite-drive`.
+Remote names: `{batch}__{session}__{png}` for the default `Conversations` root;
+other roots (e.g. `riverside_raw`) are prefixed `{root}__{batch}__{session}__{png}`
+so Drive uploads do not collide / falsely skip. Skip existing unless `--overwrite-drive`.
+
+Riverside (or any alternate WAV tree) — point `--conversations` at that root
+(same flags as the scoring CLIs):
+
+```powershell
+python -m audio_quality_pipeline.export_audio_quality_csv --conversations riverside_raw --batch delivery_batch_07012026 --skip-upload -o audio_quality_pipeline/reports/riverside_audio_quality.csv
+```
 
 ---
 
@@ -86,6 +98,9 @@ This is **not** the max FFT bin with any energy.
 python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15
 python -m audio_quality_pipeline.bandwidth_calculation --batch delivery_batch_07142026 --overwrite
 python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15 --no-spectrogram
+
+# WAVs in another tree; seglst from Conversations (skip if missing)
+python -m audio_quality_pipeline.bandwidth_calculation --conversations riverside_raw --batch delivery_batch_07012026 --seglst-root Conversations --overwrite
 ```
 
 | Output | Role |

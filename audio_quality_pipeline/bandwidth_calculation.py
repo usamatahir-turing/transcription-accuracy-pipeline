@@ -6,8 +6,12 @@ per conversation writes ``bandwidth.json``.
 Usage
 -----
     python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15
-    python -m audio_quality_pipeline.bandwidth_calculation --batch delivery_batch_07142026
     python -m audio_quality_pipeline.bandwidth_calculation --batch delivery_batch_07142026 --overwrite
+
+    # WAVs under riverside_raw; seglst from Conversations (skip if missing)
+    python -m audio_quality_pipeline.bandwidth_calculation \\
+        --conversations riverside_raw --batch delivery_batch_07012026 \\
+        --seglst-root Conversations --overwrite
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import argparse
 import json
 from pathlib import Path
 
+from audio_quality_pipeline.channel_pairs import iter_wav_seglst_pairs
 from audio_quality_pipeline.effective_bandwidth import (
     WARN_8KHZ,
     WARN_12KHZ,
@@ -32,14 +37,12 @@ BANDWIDTH_ROLLUP = "bandwidth.json"
 SPECTROGRAM_SUFFIX = "_bandwidth_spectrogram.png"
 
 
-def bandwidth_json_path(seglst_path: Path) -> Path:
-    speaker = speaker_output_name(channel_id_from_path(seglst_path))
-    return seglst_path.with_name(f"{speaker}{BANDWIDTH_JSON_SUFFIX}")
+def bandwidth_json_path_for_speaker(session_dir: Path, speaker: str) -> Path:
+    return session_dir / f"{speaker}{BANDWIDTH_JSON_SUFFIX}"
 
 
-def spectrogram_path(seglst_path: Path) -> Path:
-    speaker = speaker_output_name(channel_id_from_path(seglst_path))
-    return seglst_path.with_name(f"{speaker}{SPECTROGRAM_SUFFIX}")
+def spectrogram_path_for_speaker(session_dir: Path, speaker: str) -> Path:
+    return session_dir / f"{speaker}{SPECTROGRAM_SUFFIX}"
 
 
 def _public_estimate(est: dict) -> dict:
@@ -58,12 +61,20 @@ def _public_estimate(est: dict) -> dict:
     }
 
 
-def score_speaker(seglst_path: Path, *, write_spectrogram: bool) -> dict | None:
-    channel_id = channel_id_from_path(seglst_path)
+def score_speaker(
+    wav_path: Path,
+    seglst_path: Path,
+    *,
+    write_spectrogram: bool,
+    session_id: str | None = None,
+) -> dict | None:
+    channel_id = channel_id_from_path(wav_path)
     speaker = speaker_output_name(channel_id)
-    wav_path = seglst_path.with_name(f"{channel_id}.wav")
     if not wav_path.is_file():
         print(f"    SKIP {speaker}: no {wav_path.name}")
+        return None
+    if not seglst_path.is_file():
+        print(f"    SKIP {speaker}: no {seglst_path.name}")
         return None
 
     window = extract_speech_audio(wav_path, seglst_path)
@@ -83,20 +94,21 @@ def score_speaker(seglst_path: Path, *, write_spectrogram: bool) -> dict | None:
     if sr >= 44_100 and est["effective_hz"] <= WARN_8KHZ:
         flags.append("container_vs_content_mismatch")
 
+    session = session_id or wav_path.parent.name
     artifacts: dict = {}
     if write_spectrogram:
-        png = spectrogram_path(seglst_path)
+        png = spectrogram_path_for_speaker(wav_path.parent, speaker)
         save_bandwidth_spectrogram(
             window["audio"],
             sr,
             png,
             effective_hz=est["effective_hz"],
-            title=f"{seglst_path.parent.name}/{speaker}  B≈{est['effective_hz']:.0f} Hz",
+            title=f"{session}/{speaker}  B≈{est['effective_hz']:.0f} Hz",
         )
         artifacts["spectrogram_png"] = png.name
 
     return {
-        "session_id": seglst_path.parent.name,
+        "session_id": session,
         "speaker": speaker,
         "channel_id": channel_id,
         "wav": wav_path.name,
@@ -128,6 +140,7 @@ def score_speaker(seglst_path: Path, *, write_spectrogram: bool) -> dict | None:
             "contiguous_hz": est["contiguous_hz"],
             "margin_db": est["margin_db"],
             "stft_ms": est.get("stft_ms"),
+            "seglst": seglst_path.as_posix(),
             "description": (
                 "Highest frequency with sustained LTAS energy "
                 f"(median over frames, contiguous {est['contiguous_hz']} Hz) "
@@ -142,22 +155,29 @@ def process_conversation(
     *,
     overwrite: bool,
     write_spectrogram: bool,
+    seglst_root: Path | None,
 ) -> dict | None:
-    seglst_files = sorted(session_dir.glob("*.seglst.json"))
-    if not seglst_files:
+    pairs = iter_wav_seglst_pairs(session_dir, seglst_root=seglst_root)
+    if not pairs:
         return None
 
     speakers_out: dict[str, dict] = {}
-    for seglst_path in seglst_files:
-        speaker = speaker_output_name(channel_id_from_path(seglst_path))
-        out_path = bandwidth_json_path(seglst_path)
+    for wav_path, seglst_path in pairs:
+        channel_id = channel_id_from_path(wav_path)
+        speaker = speaker_output_name(channel_id)
+        out_path = bandwidth_json_path_for_speaker(session_dir, speaker)
         if out_path.exists() and not overwrite:
             existing = json.loads(out_path.read_text(encoding="utf-8"))
             speakers_out[speaker] = existing
             print(f"    SKIP {speaker}: {out_path.name} exists")
             continue
         try:
-            result = score_speaker(seglst_path, write_spectrogram=write_spectrogram)
+            result = score_speaker(
+                wav_path,
+                seglst_path,
+                write_spectrogram=write_spectrogram,
+                session_id=session_dir.name,
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"    FAIL {speaker}: {exc}")
             continue
@@ -181,21 +201,25 @@ def process_conversation(
     n_le_12 = sum(1 for e in effs if e <= WARN_12KHZ)
     n_le_16 = sum(1 for e in effs if e <= WARN_16KHZ)
 
+    method = {
+        "metric": "effective_bandwidth_ltas",
+        "description": (
+            "Effective bandwidth from speech-only LTAS "
+            f"(pass if effective_hz > {WARN_8KHZ:.0f} Hz)."
+        ),
+        "speech_mask": "speech-only seglst (NSV-only excluded)",
+        "thresholds_hz": {
+            "warn_8k": WARN_8KHZ,
+            "warn_12k": WARN_12KHZ,
+            "warn_16k": WARN_16KHZ,
+        },
+    }
+    if seglst_root is not None:
+        method["seglst_root"] = str(seglst_root)
+
     return {
         "session_id": session_dir.name,
-        "method": {
-            "metric": "effective_bandwidth_ltas",
-            "description": (
-                "Effective bandwidth from speech-only LTAS "
-                f"(pass if effective_hz > {WARN_8KHZ:.0f} Hz)."
-            ),
-            "speech_mask": "speech-only seglst (NSV-only excluded)",
-            "thresholds_hz": {
-                "warn_8k": WARN_8KHZ,
-                "warn_12k": WARN_12KHZ,
-                "warn_16k": WARN_16KHZ,
-            },
-        },
+        "method": method,
         "conversation": {
             "n_speakers": len(speakers_out),
             "n_le_8khz": n_le_8,
@@ -217,7 +241,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip writing *_bandwidth_spectrogram.png review plots.",
     )
+    parser.add_argument(
+        "--seglst-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional root with the same <batch>/<conversation>/ layout that "
+            "holds *.seglst.json (e.g. Conversations). WAV root is still "
+            "--conversations. Channels without a matching seglst are skipped."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    seglst_root = args.seglst_root.resolve() if args.seglst_root else None
+    if seglst_root is not None and not seglst_root.is_dir():
+        print(f"ERROR: seglst root not found: {seglst_root}")
+        return 1
 
     root = Path(args.conversations)
     try:
@@ -242,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
                 session_dir,
                 overwrite=args.overwrite,
                 write_spectrogram=write_spectrogram,
+                seglst_root=seglst_root,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"  FAIL {session_dir.name}: {exc}")

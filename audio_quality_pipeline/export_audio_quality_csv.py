@@ -52,8 +52,19 @@ def drive_view_url(file_id: str) -> str:
     return f"https://drive.google.com/file/d/{file_id}/view"
 
 
-def remote_png_name(batch: str, session_id: str, png_name: str) -> str:
-    return f"{batch}__{session_id}__{png_name}"
+def remote_png_name(
+    batch: str,
+    session_id: str,
+    png_name: str,
+    *,
+    source_tag: str | None = None,
+) -> str:
+    """Drive object name. Non-Conversations roots get a prefix to avoid collisions."""
+    base = f"{batch}__{session_id}__{png_name}"
+    tag = (source_tag or "").strip()
+    if not tag or tag.lower() == "conversations":
+        return base
+    return f"{tag}__{base}"
 
 
 def list_drive_files_by_name(drive_service, folder_id: str) -> dict[str, str]:
@@ -239,7 +250,7 @@ def _merge_dnsmos(row: dict, path: Path) -> None:
         row["peak_dbfs"] = diag.get("peak_dbfs")
 
 
-def _merge_bandwidth(row: dict, path: Path, batch: str) -> None:
+def _merge_bandwidth(row: dict, path: Path, batch: str, *, source_tag: str) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -269,10 +280,11 @@ def _merge_bandwidth(row: dict, path: Path, batch: str) -> None:
 
     if png_name and png_path and png_path.is_file():
         row["_png_path"] = str(png_path)
-        row["_remote_png_name"] = remote_png_name(batch, session_id, png_name)
+        row["_remote_png_name"] = remote_png_name(
+            batch, session_id, png_name, source_tag=source_tag)
 
 
-def collect_rows(session_dirs: list[Path]) -> list[dict]:
+def collect_rows(session_dirs: list[Path], *, source_tag: str) -> list[dict]:
     """Join DNSMOS + bandwidth JSONs on (batch, session, wav file_name)."""
     rows_by_key: dict[tuple[str, str, str], dict] = {}
 
@@ -302,7 +314,7 @@ def collect_rows(session_dirs: list[Path]) -> list[dict]:
             key = (batch, data.get("session_id") or session_id, file_name)
             if key not in rows_by_key:
                 rows_by_key[key] = _empty_row(key[0], key[1], key[2])
-            _merge_bandwidth(rows_by_key[key], path, batch)
+            _merge_bandwidth(rows_by_key[key], path, batch, source_tag=source_tag)
 
     return list(rows_by_key.values())
 
@@ -344,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root = Path(args.conversations)
+    source_tag = root.resolve().name
     try:
         session_dirs = resolve_conversation_dirs(root, args.batch, args.conversation)
     except FileNotFoundError as exc:
@@ -353,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit > 0:
         session_dirs = session_dirs[: args.limit]
 
-    rows = collect_rows(session_dirs)
+    rows = collect_rows(session_dirs, source_tag=source_tag)
     rows.sort(
         key=lambda r: (
             r["batch"] or "",

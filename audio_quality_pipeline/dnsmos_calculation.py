@@ -9,8 +9,12 @@ Per speaker writes ``{speaker}_dnsmos.json``; per conversation writes ``dnsmos.j
 Usage
 -----
     python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-KO-SS15-CONVO34
-    python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026
-    python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07012026 --overwrite
+    python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026 --overwrite
+
+    # Score WAVs under riverside_raw; load seglst from Conversations (skip if missing)
+    python -m audio_quality_pipeline.dnsmos_calculation \\
+        --conversations riverside_raw --batch delivery_batch_07012026 \\
+        --seglst-root Conversations --overwrite
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import argparse
 import json
 from pathlib import Path
 
+from audio_quality_pipeline.channel_pairs import iter_wav_seglst_pairs
 from audio_quality_pipeline.dnsmos_p835 import (
     SIG_WARN_MIN,
     score_audio,
@@ -47,9 +52,8 @@ SPEECH_MASK_LABELS = {
 }
 
 
-def dnsmos_json_path(seglst_path: Path) -> Path:
-    speaker = speaker_output_name(channel_id_from_path(seglst_path))
-    return seglst_path.with_name(f"{speaker}{DNSMOS_JSON_SUFFIX}")
+def dnsmos_json_path_for_speaker(session_dir: Path, speaker: str) -> Path:
+    return session_dir / f"{speaker}{DNSMOS_JSON_SUFFIX}"
 
 
 def _load_window(wav_path: Path, seglst_path: Path, window: str) -> dict:
@@ -77,16 +81,20 @@ def _load_window(wav_path: Path, seglst_path: Path, window: str) -> dict:
 
 
 def score_speaker(
+    wav_path: Path,
     seglst_path: Path,
     *,
     window: str = WINDOW_SPEECH_TIMELINE,
     personalized: bool = True,
+    session_id: str | None = None,
 ) -> dict | None:
-    channel_id = channel_id_from_path(seglst_path)
+    channel_id = channel_id_from_path(wav_path)
     speaker = speaker_output_name(channel_id)
-    wav_path = seglst_path.with_name(f"{channel_id}.wav")
     if not wav_path.is_file():
         print(f"    SKIP {speaker}: no {wav_path.name}")
+        return None
+    if not seglst_path.is_file():
+        print(f"    SKIP {speaker}: no {seglst_path.name}")
         return None
 
     win = _load_window(wav_path, seglst_path, window)
@@ -111,7 +119,7 @@ def score_speaker(
         diagnostics["file_s"] = win["file_s"]
 
     return {
-        "session_id": seglst_path.parent.name,
+        "session_id": session_id or wav_path.parent.name,
         "speaker": speaker,
         "channel_id": channel_id,
         "wav": wav_path.name,
@@ -136,6 +144,7 @@ def score_speaker(
             "personalized": personalized,
             "model": "sig_bak_ovr.onnx",
             "device": scores["device"],
+            "seglst": seglst_path.as_posix(),
         },
     }
 
@@ -146,15 +155,17 @@ def process_conversation(
     overwrite: bool,
     window: str,
     personalized: bool,
+    seglst_root: Path | None,
 ) -> dict | None:
-    seglst_files = sorted(session_dir.glob("*.seglst.json"))
-    if not seglst_files:
+    pairs = iter_wav_seglst_pairs(session_dir, seglst_root=seglst_root)
+    if not pairs:
         return None
 
     speakers_out: dict[str, dict] = {}
-    for seglst_path in seglst_files:
-        speaker = speaker_output_name(channel_id_from_path(seglst_path))
-        out_path = dnsmos_json_path(seglst_path)
+    for wav_path, seglst_path in pairs:
+        channel_id = channel_id_from_path(wav_path)
+        speaker = speaker_output_name(channel_id)
+        out_path = dnsmos_json_path_for_speaker(session_dir, speaker)
         if out_path.exists() and not overwrite:
             existing = json.loads(out_path.read_text(encoding="utf-8"))
             speakers_out[speaker] = existing
@@ -162,7 +173,12 @@ def process_conversation(
             continue
         try:
             result = score_speaker(
-                seglst_path, window=window, personalized=personalized)
+                wav_path,
+                seglst_path,
+                window=window,
+                personalized=personalized,
+                session_id=session_dir.name,
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"    FAIL {speaker}: {exc}")
             continue
@@ -186,21 +202,25 @@ def process_conversation(
     ovrls = [s["dnsmos"]["ovrl"] for s in speakers_out.values()]
     n_fail = sum(1 for s in speakers_out.values() if not s["dnsmos"]["pass"])
 
+    method = {
+        "metric": "DNSMOS_P835",
+        "description": (
+            "DNSMOS P.835 SIG/BAK/OVRL with speech-timeline mask and "
+            f"{'personalized' if personalized else 'non-personalized'} polyfit "
+            f"(SIG > {SIG_WARN_MIN} warning threshold)."
+        ),
+        "speech_mask": SPEECH_MASK_LABELS[window],
+        "window": window,
+        "personalized": personalized,
+        "threshold_sig": SIG_WARN_MIN,
+        "device": session_device(),
+    }
+    if seglst_root is not None:
+        method["seglst_root"] = str(seglst_root)
+
     return {
         "session_id": session_dir.name,
-        "method": {
-            "metric": "DNSMOS_P835",
-            "description": (
-                "DNSMOS P.835 SIG/BAK/OVRL with speech-timeline mask and "
-                f"{'personalized' if personalized else 'non-personalized'} polyfit "
-                f"(SIG > {SIG_WARN_MIN} warning threshold)."
-            ),
-            "speech_mask": SPEECH_MASK_LABELS[window],
-            "window": window,
-            "personalized": personalized,
-            "threshold_sig": SIG_WARN_MIN,
-            "device": session_device(),
-        },
+        "method": method,
         "conversation": {
             "n_speakers": len(speakers_out),
             "n_fail_sig": n_fail,
@@ -231,8 +251,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use non-personalized polyfit (Microsoft default without -p).",
     )
+    parser.add_argument(
+        "--seglst-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional root with the same <batch>/<conversation>/ layout that "
+            "holds *.seglst.json (e.g. Conversations). WAV root is still "
+            "--conversations. Channels without a matching seglst are skipped."
+        ),
+    )
     args = parser.parse_args(argv)
     personalized = not args.non_personalized
+    seglst_root = args.seglst_root.resolve() if args.seglst_root else None
+    if seglst_root is not None and not seglst_root.is_dir():
+        print(f"ERROR: seglst root not found: {seglst_root}")
+        return 1
 
     root = Path(args.conversations)
     try:
@@ -257,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
                 overwrite=args.overwrite,
                 window=args.window,
                 personalized=personalized,
+                seglst_root=seglst_root,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"  FAIL {session_dir.name}: {exc}")

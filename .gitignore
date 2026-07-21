@@ -6,6 +6,7 @@ env/
 # --- Conversation data & pipeline outputs ---
 # Annotations, audio, and every file produced by the workflow scripts.
 Conversations/
+riverside_raw/
 chsep_audio_qa/
 # --- Generated reports ---
 reports/
