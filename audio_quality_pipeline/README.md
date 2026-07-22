@@ -79,6 +79,19 @@ Riverside (or any alternate WAV tree) — point `--conversations` at that root
 python -m audio_quality_pipeline.export_audio_quality_csv --conversations riverside_raw --batch delivery_batch_07012026 --skip-upload -o audio_quality_pipeline/reports/riverside_audio_quality.csv
 ```
 
+### Upload riverside WAVs to Drive
+
+Uploads only `*.wav` from `riverside_raw/<batch>/<conversation>/` into Drive
+folder `1a4_IU71HnHsmVS-mFl59J70oSrMcIiNA` as `<batch>/<conversation>/<file>.wav`
+(no `riverside_raw` wrapper). Existing files are skipped unless `--overwrite`.
+
+```powershell
+python -m audio_quality_pipeline.upload_riverside_wavs
+python -m audio_quality_pipeline.upload_riverside_wavs --batch delivery_batch_07012026
+python -m audio_quality_pipeline.upload_riverside_wavs --conversation NV-EN-SS12-CONVO30
+python -m audio_quality_pipeline.upload_riverside_wavs --overwrite
+```
+
 ---
 
 ## Effective bandwidth (§3.3)
