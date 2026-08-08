@@ -131,6 +131,11 @@ def mirror_folder_sync_recursive(drive_service, root_folder_id, root_destination
                     stats['skipped_pipeline'] += 1
                     continue
 
+                # Mixed WAVs are large and unused by local pipelines; never download.
+                # Not adding to valid_local_paths so cleanup removes any prior local copy.
+                if file_name.endswith("_mixed.wav"):
+                    continue
+
                 # Add this exact path to our tracker so it doesn't get deleted later
                 valid_local_paths.add(file_path)
 
