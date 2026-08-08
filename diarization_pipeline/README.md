@@ -34,6 +34,10 @@ python -m diarization_pipeline.sad_hypothesis --sad-mode sortformer --conversati
 python -m diarization_pipeline.deter_calculation --conversation NV-KO-SS03-CONVO08
 python -m diarization_pipeline.deter_calculation --sad-mode sortformer --conversation NV-KO-SS03-CONVO08
 
+# Single speaker (channel stem or stripped email local-part)
+python -m diarization_pipeline.deter_calculation --conversation NV-EN-SS20-CONVO46 --file aryan.t1 --overwrite
+python -m diarization_pipeline.deter_calculation --conversation NV-EN-SS20-CONVO46 --file aryan.t1@turing.com --overwrite
+
 # Re-score existing RTTMs
 python -m diarization_pipeline.deter_calculation --score-only --reuse-sad --conversation NV-KO-SS03-CONVO08
 

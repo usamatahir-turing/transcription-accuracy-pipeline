@@ -8,6 +8,7 @@ Usage
     python -m diarization_pipeline.deter_calculation --conversation NV-KO-SS03-CONVO08
     python -m diarization_pipeline.deter_calculation --sad-mode sortformer --conversation NV-KO-SS03-CONVO08
     python -m diarization_pipeline.deter_calculation --score-only --reuse-sad --conversation NV-KO-SS03-CONVO08
+    python -m diarization_pipeline.deter_calculation --conversation NV-EN-SS20-CONVO46 --file aryan.t1 --overwrite
 """
 
 from __future__ import annotations
@@ -59,6 +60,69 @@ def _channel_id_from_seglst(seglst_path: Path) -> str:
 def _speaker_from_seglst(seglst_path: Path) -> str:
     """Output speaker label (``@turing.com`` stripped when present)."""
     return speaker_output_name(channel_id_from_path(seglst_path))
+
+
+def _seglst_matches_file(seglst_path: Path, file: str) -> bool:
+    """True if ``file`` matches channel stem or stripped speaker output name."""
+    channel_id = channel_id_from_path(seglst_path)
+    speaker = speaker_output_name(channel_id)
+    return file in (channel_id, speaker, seglst_path.name)
+
+
+def _conversation_rollup(session_id: str, speakers_out: dict[str, dict],
+                         *, collar: float, deter_ch_max: float,
+                         sad_mode: SadMode) -> dict:
+    rates = [s["deter"]["error_rate"] for s in speakers_out.values()]
+    scored_s = sum(s["deter"]["scored_speech_s"] for s in speakers_out.values())
+    missed_s = sum(s["deter"]["missed_s"] for s in speakers_out.values())
+    fa_s = sum(s["deter"]["false_alarm_s"] for s in speakers_out.values())
+    conv_rate = sum(rates) / len(rates) if rates else 0.0
+    return {
+        "session_id": session_id,
+        "method": {
+            "metric": "DetER",
+            "description": (
+                "Detection error rate: SAD hypothesis vs speech-only seglst reference, "
+                "flattened to one speaker (no speaker confusion). NSV-only turns "
+                "([laugh], [inhale], …) are excluded from scoring via a UEM."
+            ),
+            "sad_mode": sad_mode,
+            "hypothesis": sad_mode_description(sad_mode),
+            "reference": "SPK*_der.rttm (speech-only seglst)",
+            "collar_s": collar,
+            "threshold_per_channel": deter_ch_max,
+            "scorer": "NeMo der.score_labels (pyannote engine)",
+        },
+        "conversation": {
+            "mean_deter": round(conv_rate, 6),
+            "mean_deter_pct": round(conv_rate * 100, 2),
+            "pass": all(s["deter"]["pass"] for s in speakers_out.values()),
+            "n_speakers": len(speakers_out),
+            "scored_speech_s": round(scored_s, 3),
+            "missed_s": round(missed_s, 3),
+            "false_alarm_s": round(fa_s, 3),
+        },
+        "speakers": speakers_out,
+    }
+
+
+def _merge_conversation_result(existing: dict | None, new_result: dict,
+                               *, collar: float, deter_ch_max: float,
+                               sad_mode: SadMode) -> dict:
+    """Update one or more speakers in an existing conversation rollup."""
+    speakers: dict[str, dict] = {}
+    if existing:
+        speakers.update(existing.get("speakers") or {})
+    speakers.update(new_result.get("speakers") or {})
+    return _conversation_rollup(
+        new_result.get("session_id")
+        or (existing or {}).get("session_id")
+        or "",
+        speakers,
+        collar=collar,
+        deter_ch_max=deter_ch_max,
+        sad_mode=sad_mode,
+    )
 
 
 def ensure_ref_rttm(seglst_path: Path, *, overwrite: bool) -> Path | None:
@@ -185,8 +249,17 @@ def process_conversation(
     deter_ch_max: float,
     batch_size: int,
     sad_mode: SadMode,
+    file: str | None = None,
 ) -> dict | None:
     seglst_files = sorted(session_dir.glob("*.seglst.json"))
+    if file:
+        seglst_files = [p for p in seglst_files if _seglst_matches_file(p, file)]
+        if not seglst_files:
+            raise FileNotFoundError(
+                f"speaker file {file!r} not found in {session_dir.name} "
+                f"(expected {{stem}}.seglst.json; stem may be channel id or "
+                f"stripped speaker name)."
+            )
     if not seglst_files:
         return None
 
@@ -252,44 +325,15 @@ def process_conversation(
     if not speakers_out:
         return None
 
-    rates = [s["deter"]["error_rate"] for s in speakers_out.values()]
-    scored_s = sum(s["deter"]["scored_speech_s"] for s in speakers_out.values())
-    missed_s = sum(s["deter"]["missed_s"] for s in speakers_out.values())
-    fa_s = sum(s["deter"]["false_alarm_s"] for s in speakers_out.values())
-    conv_rate = sum(rates) / len(rates) if rates else 0.0
-
-    return {
-        "session_id": session_dir.name,
-        "method": {
-            "metric": "DetER",
-            "description": (
-                "Detection error rate: SAD hypothesis vs speech-only seglst reference, "
-                "flattened to one speaker (no speaker confusion). NSV-only turns "
-                "([laugh], [inhale], …) are excluded from scoring via a UEM."
-            ),
-            "sad_mode": sad_mode,
-            "hypothesis": sad_mode_description(sad_mode),
-            "reference": "SPK*_der.rttm (speech-only seglst)",
-            "collar_s": collar,
-            "threshold_per_channel": deter_ch_max,
-            "scorer": "NeMo der.score_labels (pyannote engine)",
-        },
-        "conversation": {
-            "mean_deter": round(conv_rate, 6),
-            "mean_deter_pct": round(conv_rate * 100, 2),
-            "pass": all(s["deter"]["pass"] for s in speakers_out.values()),
-            "n_speakers": len(speakers_out),
-            "scored_speech_s": round(scored_s, 3),
-            "missed_s": round(missed_s, 3),
-            "false_alarm_s": round(fa_s, 3),
-        },
-        "speakers": speakers_out,
-    }
+    return _conversation_rollup(
+        session_dir.name, speakers_out,
+        collar=collar, deter_ch_max=deter_ch_max, sad_mode=sad_mode,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    add_scope_args(parser, with_file=False)
+    add_scope_args(parser, with_file=True)
     add_sad_mode_arg(parser)
     parser.add_argument("--ref-only", action="store_true",
                         help="Only build SPK*_der.rttm reference RTTMs.")
@@ -308,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.ref_only and args.score_only:
         print("ERROR: --ref-only and --score-only are mutually exclusive.")
         return 1
+    if args.file and not args.conversation:
+        print("ERROR: --file requires --conversation to also be set.")
+        return 1
 
     root = Path(args.conversations)
     try:
@@ -322,8 +369,11 @@ def main(argv: list[str] | None = None) -> int:
     n_done = n_skipped = n_empty = n_fail = 0
     for session_dir in session_dirs:
         out_path = session_dir / "deter.json"
+        # Conversation-level skip only when processing all speakers; with --file
+        # per-speaker *_deter.json skip logic still applies inside process_conversation.
         if (
-            not args.ref_only
+            not args.file
+            and not args.ref_only
             and out_path.exists()
             and not args.overwrite
             and not args.score_only
@@ -341,7 +391,12 @@ def main(argv: list[str] | None = None) -> int:
                 deter_ch_max=args.deter_ch_max,
                 batch_size=args.batch_size,
                 sad_mode=args.sad_mode,
+                file=args.file,
             )
+        except FileNotFoundError as exc:
+            print(f"  FAIL {session_dir.name}: {exc}")
+            n_fail += 1
+            continue
         except Exception as exc:  # noqa: BLE001
             print(f"  FAIL {session_dir.name}: {exc}")
             n_fail += 1
@@ -352,11 +407,23 @@ def main(argv: list[str] | None = None) -> int:
         if result is None:
             n_empty += 1
             continue
+        if args.file and out_path.exists():
+            try:
+                existing = json.loads(out_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = None
+            result = _merge_conversation_result(
+                existing, result,
+                collar=args.collar,
+                deter_ch_max=args.deter_ch_max,
+                sad_mode=args.sad_mode,
+            )
         out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         c = result["conversation"]
         verdict = "PASS" if c["pass"] else "FAIL"
+        scope = f" (--file {args.file})" if args.file else ""
         print(
-            f"  OK   {session_dir.name}  mean DetER={c['mean_deter_pct']:.2f}%  "
+            f"  OK   {session_dir.name}{scope}  mean DetER={c['mean_deter_pct']:.2f}%  "
             f"mode={args.sad_mode}  {c['n_speakers']} speaker(s)  {verdict}"
         )
         n_done += 1
