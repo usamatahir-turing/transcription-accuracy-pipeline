@@ -1,17 +1,14 @@
-"""Effective-bandwidth pipeline: LTAS cutoff per speaker channel (speech-masked).
+"""Effective-bandwidth pipeline: annotated STFT on RTTM-masked frames.
+
+Matches Batch 8/9 QA ``annotated-stft-v1-nfft2048-hop1024-profile250``.
 
 Per speaker writes ``{speaker}_bandwidth.json`` (+ optional spectrogram PNG);
 per conversation writes ``bandwidth.json``.
 
 Usage
 -----
-    python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15
-    python -m audio_quality_pipeline.bandwidth_calculation --batch delivery_batch_07142026 --overwrite
-
-    # WAVs under riverside_raw; seglst from Conversations (skip if missing)
-    python -m audio_quality_pipeline.bandwidth_calculation \\
-        --conversations riverside_raw --batch delivery_batch_07012026 \\
-        --seglst-root Conversations --overwrite
+    python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS13-CONVO22
+    python -m audio_quality_pipeline.bandwidth_calculation --batch delivery_batch_08082026 --overwrite
 """
 
 from __future__ import annotations
@@ -22,13 +19,18 @@ from pathlib import Path
 
 from audio_quality_pipeline.channel_pairs import iter_wav_seglst_pairs
 from audio_quality_pipeline.effective_bandwidth import (
+    ANALYSIS_VERSION,
     WARN_8KHZ,
     WARN_12KHZ,
     WARN_16KHZ,
     estimate_effective_bandwidth,
     save_bandwidth_spectrogram,
 )
-from audio_quality_pipeline.speech_windows import extract_speech_audio
+from audio_quality_pipeline.rttm_utils import (
+    load_rttm_spans,
+    rttm_speech_seconds,
+)
+from audio_quality_pipeline.speech_windows import load_mono_wav
 from diarization_pipeline.common import channel_id_from_path, speaker_output_name
 from workflow_common import add_scope_args, resolve_conversation_dirs
 
@@ -46,24 +48,31 @@ def spectrogram_path_for_speaker(session_dir: Path, speaker: str) -> Path:
 
 
 def _public_estimate(est: dict) -> dict:
-    """Drop internal STFT arrays before JSON serialization."""
     return {
         "effective_hz": est["effective_hz"],
+        "effective_khz": est.get("effective_khz"),
         "nyquist_hz": est["nyquist_hz"],
         "bucket": est["bucket"],
+        "category": est.get("category"),
         "pass": est["pass"],
-        "hf_floor_db": est["hf_floor_db"],
-        "margin_db": est["margin_db"],
-        "contiguous_hz": est["contiguous_hz"],
-        "n_stft_frames": est["n_stft_frames"],
-        "n_fft": est["n_fft"],
-        "stft_ms": est.get("stft_ms"),
+        "analysis_version": est.get("analysis_version", ANALYSIS_VERSION),
+        "activity_threshold_dbfs": est.get("activity_threshold_dbfs"),
+        "silence_rms_dbfs": est.get("silence_rms_dbfs"),
+        "cutoff_drop_db": est.get("cutoff_drop_db"),
+        "pre_cutoff_db_relative": est.get("pre_cutoff_db_relative"),
+        "post_cutoff_db_relative": est.get("post_cutoff_db_relative"),
+        "sampled_windows": est.get("sampled_windows"),
+        "active_stft_frames": est.get("active_stft_frames"),
+        "n_stft_frames": est.get("n_stft_frames"),
+        "n_fft": est.get("n_fft"),
+        "hop": est.get("hop"),
+        "profile_bin_hz": est.get("profile_bin_hz"),
     }
 
 
 def score_speaker(
     wav_path: Path,
-    seglst_path: Path,
+    rttm_path: Path,
     *,
     write_spectrogram: bool,
     session_id: str | None = None,
@@ -73,17 +82,22 @@ def score_speaker(
     if not wav_path.is_file():
         print(f"    SKIP {speaker}: no {wav_path.name}")
         return None
-    if not seglst_path.is_file():
-        print(f"    SKIP {speaker}: no {seglst_path.name}")
+    if not rttm_path.is_file():
+        print(f"    SKIP {speaker}: no {rttm_path.name}")
         return None
 
-    window = extract_speech_audio(wav_path, seglst_path)
-    if window["n_samples"] < int(0.1 * window["sample_rate"]):
-        print(f"    WARN {speaker}: too little speech ({window['speech_s']}s)")
+    spans = load_rttm_spans(rttm_path)
+    if not spans:
+        print(f"    SKIP {speaker}: empty {rttm_path.name}")
         return None
 
-    est = estimate_effective_bandwidth(window["audio"], window["sample_rate"])
-    sr = window["sample_rate"]
+    audio, sr = load_mono_wav(wav_path)
+    speech_s = rttm_speech_seconds(spans)
+    if speech_s < 0.1:
+        print(f"    WARN {speaker}: too little annotated speech ({speech_s}s)")
+        return None
+
+    est = estimate_effective_bandwidth(audio, sr, spans)
     flags: list[str] = []
     if est["effective_hz"] <= WARN_8KHZ:
         flags.append("le_8khz")
@@ -99,7 +113,7 @@ def score_speaker(
     if write_spectrogram:
         png = spectrogram_path_for_speaker(wav_path.parent, speaker)
         save_bandwidth_spectrogram(
-            window["audio"],
+            audio,
             sr,
             png,
             effective_hz=est["effective_hz"],
@@ -122,29 +136,20 @@ def score_speaker(
             },
         },
         "diagnostics": {
-            "speech_s": window["speech_s"],
-            "speech_min": window["speech_min"],
-            "peak_dbfs": window["peak_dbfs"],
-            "n_speech_segments": window["n_speech_segments"],
+            "annotated_speech_s": round(speech_s, 3),
+            "speech_min": round(speech_s / 60.0, 3),
             "sample_rate": sr,
-            "hf_floor_db": est["hf_floor_db"],
-            "margin_db": est["margin_db"],
-            "n_stft_frames": est["n_stft_frames"],
+            "rttm": rttm_path.name,
         },
         "flags": flags,
         "artifacts": artifacts,
         "method": {
-            "metric": "effective_bandwidth_ltas",
-            "speech_mask": "speech-only seglst (NSV-only excluded)",
-            "aggregate": "median",
-            "contiguous_hz": est["contiguous_hz"],
-            "margin_db": est["margin_db"],
-            "stft_ms": est.get("stft_ms"),
-            "seglst": seglst_path.as_posix(),
+            "metric": "effective_bandwidth_annotated_stft",
+            "analysis_version": ANALYSIS_VERSION,
+            "annotation": "per-channel RTTM",
             "description": (
-                "Highest frequency with sustained LTAS energy "
-                f"(median over frames, contiguous {est['contiguous_hz']} Hz) "
-                f"at least {est['margin_db']} dB above the HF noise floor."
+                "Batch 8/9 annotated STFT profile cutoff on RTTM-masked frames "
+                f"({est.get('sampled_windows', 0)} sampled windows)."
             ),
         },
     }
@@ -162,9 +167,15 @@ def process_conversation(
         return None
 
     speakers_out: dict[str, dict] = {}
-    for wav_path, seglst_path in pairs:
+    for wav_path, _seglst_path in pairs:
         channel_id = channel_id_from_path(wav_path)
         speaker = speaker_output_name(channel_id)
+        if seglst_root is None:
+            rttm_path = wav_path.parent / f"{channel_id}.rttm"
+        else:
+            batch = session_dir.parent.name
+            rttm_path = seglst_root / batch / session_dir.name / f"{channel_id}.rttm"
+
         out_path = bandwidth_json_path_for_speaker(session_dir, speaker)
         if out_path.exists() and not overwrite:
             existing = json.loads(out_path.read_text(encoding="utf-8"))
@@ -174,7 +185,7 @@ def process_conversation(
         try:
             result = score_speaker(
                 wav_path,
-                seglst_path,
+                rttm_path,
                 write_spectrogram=write_spectrogram,
                 session_id=session_dir.name,
             )
@@ -201,25 +212,16 @@ def process_conversation(
     n_le_12 = sum(1 for e in effs if e <= WARN_12KHZ)
     n_le_16 = sum(1 for e in effs if e <= WARN_16KHZ)
 
-    method = {
-        "metric": "effective_bandwidth_ltas",
-        "description": (
-            "Effective bandwidth from speech-only LTAS "
-            f"(pass if effective_hz > {WARN_8KHZ:.0f} Hz)."
-        ),
-        "speech_mask": "speech-only seglst (NSV-only excluded)",
-        "thresholds_hz": {
-            "warn_8k": WARN_8KHZ,
-            "warn_12k": WARN_12KHZ,
-            "warn_16k": WARN_16KHZ,
-        },
-    }
-    if seglst_root is not None:
-        method["seglst_root"] = str(seglst_root)
-
     return {
         "session_id": session_dir.name,
-        "method": method,
+        "method": {
+            "metric": "effective_bandwidth_annotated_stft",
+            "analysis_version": ANALYSIS_VERSION,
+            "description": (
+                "Effective bandwidth from RTTM-masked annotated STFT "
+                f"(pass if effective_hz > {WARN_8KHZ:.0f} Hz)."
+            ),
+        },
         "conversation": {
             "n_speakers": len(speakers_out),
             "n_le_8khz": n_le_8,
@@ -246,16 +248,15 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help=(
-            "Optional root with the same <batch>/<conversation>/ layout that "
-            "holds *.seglst.json (e.g. Conversations). WAV root is still "
-            "--conversations. Channels without a matching seglst are skipped."
+            "Optional root for locating RTTM/seglst alongside WAVs when WAVs "
+            "live under another tree (same layout as DNSMOS)."
         ),
     )
     args = parser.parse_args(argv)
 
     seglst_root = args.seglst_root.resolve() if args.seglst_root else None
     if seglst_root is not None and not seglst_root.is_dir():
-        print(f"ERROR: seglst root not found: {seglst_root}")
+        print(f"ERROR: annotation root not found: {seglst_root}")
         return 1
 
     root = Path(args.conversations)

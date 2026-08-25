@@ -1,20 +1,20 @@
-"""DNSMOS P.835 pipeline: score each speaker channel (speech-timeline masked).
+"""DNSMOS P.835 pipeline: Batch 8/9 annotated natural-window scoring.
 
-Default (calibrated to client report Worst-100 SIG):
-  - Window: speech seglst on the full timeline (non-speech zeroed; NSV-only dropped)
-  - Polyfit: Microsoft personalized (``dnsmos_local.py -p``)
+Default (matches ``batch8and9review`` Batch 8/9 QA):
+  - Algorithm: annotated natural windows on seglst speech (0.5 s context)
+  - Polyfit: official non-personalized
+  - Aggregation: speech-in-window weighted mean
 
-Per speaker writes ``{speaker}_dnsmos.json``; per conversation writes ``dnsmos.json``.
+Per speaker writes ``{speaker}_dnsmos.json`` with channel aggregates and all
+scored ``windows`` (chronological); per conversation writes ``dnsmos.json``.
 
 Usage
 -----
-    python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-KO-SS15-CONVO34
-    python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026 --overwrite
+    python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-GR-SS13-CONVO22
+    python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_08082026 --overwrite
 
-    # Score WAVs under riverside_raw; load seglst from Conversations (skip if missing)
-    python -m audio_quality_pipeline.dnsmos_calculation \\
-        --conversations riverside_raw --batch delivery_batch_07012026 \\
-        --seglst-root Conversations --overwrite
+    # Legacy Worst-100 calibration:
+    python -m audio_quality_pipeline.dnsmos_calculation --window speech_timeline --personalized --overwrite
 """
 
 from __future__ import annotations
@@ -26,24 +26,35 @@ from pathlib import Path
 from audio_quality_pipeline.channel_pairs import iter_wav_seglst_pairs
 from audio_quality_pipeline.dnsmos_p835 import (
     SIG_WARN_MIN,
+    score_annotated_natural_window,
     score_audio,
     session_device,
+)
+from audio_quality_pipeline.natural_window_dnsmos import (
+    natural_window_starts,
+    speech_weight_sec,
 )
 from audio_quality_pipeline.speech_windows import (
     extract_speech_audio,
     extract_speech_timeline_audio,
+    rms_dbfs,
 )
+from diarization_pipeline.seglst_to_rttm import load_speech_seglst_rows
 from diarization_pipeline.common import channel_id_from_path, speaker_output_name
 from workflow_common import add_scope_args, resolve_conversation_dirs
 
 DNSMOS_JSON_SUFFIX = "_dnsmos.json"
 DNSMOS_ROLLUP = "dnsmos.json"
 
+WINDOW_NATURAL = "natural_window"
 WINDOW_SPEECH_TIMELINE = "speech_timeline"
 WINDOW_SPEECH_CONCAT = "speech_concat"
 WINDOW_FULL = "full"
 
 SPEECH_MASK_LABELS = {
+    WINDOW_NATURAL: (
+        "annotated natural-window seglst (0.5 s context; NSV-only excluded)"
+    ),
     WINDOW_SPEECH_TIMELINE: (
         "speech seglst on full timeline (non-speech zeroed; NSV-only excluded)"
     ),
@@ -56,13 +67,123 @@ def dnsmos_json_path_for_speaker(session_dir: Path, speaker: str) -> Path:
     return session_dir / f"{speaker}{DNSMOS_JSON_SUFFIX}"
 
 
-def _load_window(wav_path: Path, seglst_path: Path, window: str) -> dict:
-    if window == WINDOW_SPEECH_TIMELINE:
-        return extract_speech_timeline_audio(wav_path, seglst_path)
+def _speech_rms_dbfs(
+    audio,
+    sample_rate: int,
+    spans: list[tuple[float, float]] | None,
+) -> float | None:
+    chunks = _speech_chunks(audio, sample_rate, spans)
+    if chunks is None:
+        return rms_dbfs(np.asarray(audio, dtype=np.float32))
+    if not chunks:
+        return None
+    import numpy as np
+
+    return rms_dbfs(np.concatenate(chunks))
+
+
+def _speech_peak_dbfs(
+    audio,
+    sample_rate: int,
+    spans: list[tuple[float, float]] | None,
+) -> float | None:
+    chunks = _speech_chunks(audio, sample_rate, spans)
+    if chunks is None:
+        from audio_quality_pipeline.speech_windows import peak_dbfs
+
+        return peak_dbfs(np.asarray(audio, dtype=np.float32))
+    if not chunks:
+        return None
+    import numpy as np
+
+    from audio_quality_pipeline.speech_windows import peak_dbfs
+
+    return peak_dbfs(np.concatenate(chunks))
+
+
+def _speech_chunks(
+    audio,
+    sample_rate: int,
+    spans: list[tuple[float, float]] | None,
+):
+    if spans is None:
+        return None
+    import numpy as np
+
+    chunks: list[np.ndarray] = []
+    for start, end in spans:
+        i0 = max(0, int(round(start * sample_rate)))
+        i1 = min(len(audio), int(round(end * sample_rate)))
+        if i1 > i0:
+            chunks.append(np.asarray(audio[i0:i1], dtype=np.float32))
+    return chunks
+
+
+def _enrich_window_speech_weights(
+    windows: list[dict],
+    *,
+    window: str,
+    spans: list[tuple[float, float]] | None,
+    speech_s: float,
+) -> list[dict]:
     if window == WINDOW_SPEECH_CONCAT:
-        return extract_speech_audio(wav_path, seglst_path)
+        for row in windows:
+            wt = max(0.0, min(9.01, speech_s - row["start_sec"]))
+            wt = round(wt, 6)
+            row["speech_weight_sec"] = wt
+            row["speech_in_window_sec"] = wt
+    elif spans and window in (WINDOW_SPEECH_TIMELINE, WINDOW_FULL):
+        for row in windows:
+            wt = round(speech_weight_sec(spans, row["start_sec"]), 6)
+            row["speech_weight_sec"] = wt
+            row["speech_in_window_sec"] = wt
+    return windows
+
+
+def _windows_for_json(windows: list[dict]) -> list[dict]:
+    """All scored windows, chronological (reference ``windows[]`` order)."""
+    return sorted(windows, key=lambda w: (w["start_sec"], w["end_sec"]))
+
+
+def _load_window(wav_path: Path, seglst_path: Path, window: str) -> dict:
+    rows = load_speech_seglst_rows(seglst_path)
+    spans = [(float(r["start"]), float(r["end"])) for r in rows]
+    if window == WINDOW_NATURAL:
+        starts = natural_window_starts(seglst_path)
+        from audio_quality_pipeline.speech_windows import load_mono_wav
+
+        audio, sr = load_mono_wav(wav_path)
+        speech_s = sum(e - s for s, e in spans)
+        weights = [speech_weight_sec(spans, st) for st in starts]
+        return {
+            "audio": audio,
+            "sample_rate": sr,
+            "speech_s": round(speech_s, 3),
+            "speech_min": round(speech_s / 60.0, 3),
+            "peak_dbfs": _speech_peak_dbfs(audio, sr, spans),
+            "speech_rms_dbfs": _speech_rms_dbfs(audio, sr, spans),
+            "n_speech_segments": len(rows),
+            "n_samples": int(sum(max(0, int(round((e - s) * sr))) for s, e in spans)),
+            "window_starts": starts,
+            "window_weights": weights,
+            "spans": spans,
+            "mode": WINDOW_NATURAL,
+        }
+    if window == WINDOW_SPEECH_TIMELINE:
+        win = extract_speech_timeline_audio(wav_path, seglst_path)
+        from audio_quality_pipeline.speech_windows import load_mono_wav
+
+        audio, sr = load_mono_wav(wav_path)
+        win["spans"] = spans
+        win["speech_rms_dbfs"] = _speech_rms_dbfs(audio, sr, spans)
+        return win
+    if window == WINDOW_SPEECH_CONCAT:
+        win = extract_speech_audio(wav_path, seglst_path)
+        win["spans"] = spans
+        win["speech_rms_dbfs"] = rms_dbfs(win["audio"])
+        return win
     if window == WINDOW_FULL:
-        from audio_quality_pipeline.speech_windows import load_mono_wav, peak_dbfs
+        from audio_quality_pipeline.speech_windows import load_mono_wav
 
         audio, sr = load_mono_wav(wav_path)
         speech = extract_speech_audio(wav_path, seglst_path)
@@ -71,10 +192,12 @@ def _load_window(wav_path: Path, seglst_path: Path, window: str) -> dict:
             "sample_rate": sr,
             "speech_s": speech["speech_s"],
             "speech_min": speech["speech_min"],
-            "peak_dbfs": peak_dbfs(audio) if audio.size else None,
+            "peak_dbfs": _speech_peak_dbfs(audio, sr, spans),
+            "speech_rms_dbfs": _speech_rms_dbfs(audio, sr, spans),
             "n_speech_segments": speech["n_speech_segments"],
             "n_samples": speech["n_samples"],
             "file_s": round(len(audio) / sr, 3) if sr else 0.0,
+            "spans": spans,
             "mode": WINDOW_FULL,
         }
     raise ValueError(f"unknown window mode: {window}")
@@ -84,8 +207,8 @@ def score_speaker(
     wav_path: Path,
     seglst_path: Path,
     *,
-    window: str = WINDOW_SPEECH_TIMELINE,
-    personalized: bool = True,
+    window: str = WINDOW_NATURAL,
+    personalized: bool = False,
     session_id: str | None = None,
 ) -> dict | None:
     channel_id = channel_id_from_path(wav_path)
@@ -98,15 +221,34 @@ def score_speaker(
         return None
 
     win = _load_window(wav_path, seglst_path, window)
-    if win["n_samples"] < 1600:  # < 0.1 s of speech
+    if win["n_samples"] < 1600:
         print(f"    WARN {speaker}: too little speech ({win['speech_s']}s)")
         return None
 
-    scores = score_audio(
-        win["audio"], win["sample_rate"], personalized=personalized)
+    if window == WINDOW_NATURAL:
+        scores = score_annotated_natural_window(
+            win["audio"],
+            win["sample_rate"],
+            win["window_starts"],
+            win["window_weights"],
+            personalized=personalized,
+        )
+    else:
+        scores = score_audio(
+            win["audio"], win["sample_rate"], personalized=personalized)
+
     flags: list[str] = []
     if not scores["pass"]:
         flags.append("sig_below_3.0")
+
+    windows = list(scores.get("windows") or [])
+    if window != WINDOW_NATURAL:
+        windows = _enrich_window_speech_weights(
+            windows,
+            window=window,
+            spans=win.get("spans"),
+            speech_s=float(win["speech_s"]),
+        )
 
     diagnostics = {
         "speech_s": win["speech_s"],
@@ -117,31 +259,57 @@ def score_speaker(
     }
     if "file_s" in win:
         diagnostics["file_s"] = win["file_s"]
+    if scores.get("n_windows") is not None:
+        diagnostics["n_windows"] = scores["n_windows"]
+
+    dnsmos = {
+        "sig": scores["sig"],
+        "bak": scores["bak"],
+        "ovrl": scores["ovrl"],
+        "sig_raw": scores["sig_raw"],
+        "bak_raw": scores["bak_raw"],
+        "ovrl_raw": scores["ovrl_raw"],
+        "sig_std": scores.get("sig_std"),
+        "bak_std": scores.get("bak_std"),
+        "ovrl_std": scores.get("ovrl_std"),
+        "n_windows": scores.get("n_windows", scores["n_hops"]),
+        "n_hops": scores["n_hops"],
+        "annotated_speech_seconds": win["speech_s"],
+        "scored_speech_seconds": scores.get(
+            "scored_speech_seconds",
+            scores.get("n_windows", scores["n_hops"]) * 9.01,
+        ),
+        "speech_peak_dbfs": win["peak_dbfs"],
+        "speech_rms_dbfs": win.get("speech_rms_dbfs"),
+        "pass": scores["pass"],
+        "threshold_sig": scores["threshold_sig"],
+        "personalized": scores["personalized"],
+    }
 
     return {
         "session_id": session_id or wav_path.parent.name,
         "speaker": speaker,
         "channel_id": channel_id,
         "wav": wav_path.name,
-        "dnsmos": {
-            "sig": scores["sig"],
-            "bak": scores["bak"],
-            "ovrl": scores["ovrl"],
-            "sig_raw": scores["sig_raw"],
-            "bak_raw": scores["bak_raw"],
-            "ovrl_raw": scores["ovrl_raw"],
-            "n_hops": scores["n_hops"],
-            "pass": scores["pass"],
-            "threshold_sig": scores["threshold_sig"],
-            "personalized": scores["personalized"],
-        },
+        "dnsmos": dnsmos,
+        "windows": _windows_for_json(windows),
         "diagnostics": diagnostics,
         "flags": flags,
         "method": {
             "metric": "DNSMOS_P835",
+            "algorithm": (
+                "annotated_natural_window_dnsmos_p835"
+                if window == WINDOW_NATURAL
+                else "sliding_window_dnsmos_p835"
+            ),
             "speech_mask": SPEECH_MASK_LABELS[window],
             "window": window,
             "personalized": personalized,
+            "calibration": (
+                "official_non_personalized"
+                if not personalized
+                else "personalized"
+            ),
             "model": "sig_bak_ovr.onnx",
             "device": scores["device"],
             "seglst": seglst_path.as_posix(),
@@ -205,9 +373,9 @@ def process_conversation(
     method = {
         "metric": "DNSMOS_P835",
         "description": (
-            "DNSMOS P.835 SIG/BAK/OVRL with speech-timeline mask and "
-            f"{'personalized' if personalized else 'non-personalized'} polyfit "
-            f"(SIG > {SIG_WARN_MIN} warning threshold)."
+            "DNSMOS P.835 SIG/BAK/OVRL on annotated natural windows with "
+            f"{'personalized' if personalized else 'official non-personalized'} "
+            f"polyfit (SIG > {SIG_WARN_MIN} warning threshold)."
         ),
         "speech_mask": SPEECH_MASK_LABELS[window],
         "window": window,
@@ -239,17 +407,24 @@ def main(argv: list[str] | None = None) -> int:
     add_scope_args(parser, with_file=False)
     parser.add_argument(
         "--window",
-        choices=(WINDOW_SPEECH_TIMELINE, WINDOW_SPEECH_CONCAT, WINDOW_FULL),
-        default=WINDOW_SPEECH_TIMELINE,
-        help=(
-            "Audio window for DNSMOS (default: speech_timeline). "
-            "speech_concat = old tight concat; full = entire WAV."
+        choices=(
+            WINDOW_NATURAL,
+            WINDOW_SPEECH_TIMELINE,
+            WINDOW_SPEECH_CONCAT,
+            WINDOW_FULL,
         ),
+        default=WINDOW_NATURAL,
+        help="Audio window for DNSMOS (default: natural_window / Batch 8/9 QA).",
+    )
+    parser.add_argument(
+        "--personalized",
+        action="store_true",
+        help="Use personalized polyfit (legacy Worst-100 calibration).",
     )
     parser.add_argument(
         "--non-personalized",
         action="store_true",
-        help="Use non-personalized polyfit (Microsoft default without -p).",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--seglst-root",
@@ -262,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    personalized = not args.non_personalized
+    personalized = args.personalized and not args.non_personalized
     seglst_root = args.seglst_root.resolve() if args.seglst_root else None
     if seglst_root is not None and not seglst_root.is_dir():
         print(f"ERROR: seglst root not found: {seglst_root}")

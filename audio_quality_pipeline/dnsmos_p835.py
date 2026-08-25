@@ -1,8 +1,8 @@
 """DNSMOS P.835 (SIG / BAK / OVRL) via Microsoft's ``sig_bak_ovr.onnx``.
 
 Inference follows ``microsoft/DNS-Challenge`` ``DNSMOS/dnsmos_local.py``.
-Default polyfit is **personalized** (``-p`` in the Microsoft script), which
-matched client-report SIG best with speech-timeline masking.
+Default scoring matches Batch 8/9 QA: annotated natural windows on seglst
+speech, official **non-personalized** polyfit, speech-duration-weighted means.
 Uses ``onnxruntime`` with CUDA when available.
 """
 
@@ -129,6 +129,40 @@ def session_device() -> str:
     return _session_device
 
 
+def _weighted_std(values: list[float], weights: list[float]) -> float:
+    v = np.asarray(values, dtype=np.float64)
+    w = np.asarray(weights, dtype=np.float64)
+    if float(w.sum()) <= 0:
+        w = np.ones_like(w)
+    mean = float(np.average(v, weights=w))
+    var = float(np.average((v - mean) ** 2, weights=w))
+    return float(np.sqrt(var))
+
+
+def _window_record(
+    start_sec: float,
+    scores: dict,
+    *,
+    speech_weight_sec: float | None = None,
+) -> dict:
+    end_sec = round(start_sec + INPUT_LENGTH, 2)
+    row = {
+        "start_sec": round(start_sec, 2),
+        "end_sec": end_sec,
+        "sig": round(scores["sig"], 6),
+        "bak": round(scores["bak"], 6),
+        "ovrl": round(scores["ovrl"], 6),
+        "sig_raw": round(scores["sig_raw"], 6),
+        "bak_raw": round(scores["bak_raw"], 6),
+        "ovrl_raw": round(scores["ovrl_raw"], 6),
+    }
+    if speech_weight_sec is not None:
+        wt = round(speech_weight_sec, 6)
+        row["speech_weight_sec"] = wt
+        row["speech_in_window_sec"] = wt
+    return row
+
+
 def _polyfit(
     sig_raw: float,
     bak_raw: float,
@@ -145,12 +179,120 @@ def _polyfit(
     return float(_P_SIG(sig_raw)), float(_P_BAK(bak_raw)), float(_P_OVR(ovr_raw))
 
 
+def score_window_segment(
+    audio: np.ndarray,
+    sample_rate: int,
+    start_sec: float,
+    *,
+    model_path: Path | None = None,
+    personalized: bool = False,
+) -> dict:
+    """Score one fixed 9.01 s window starting at ``start_sec``."""
+    import librosa
+
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=-1)
+    audio = np.asarray(audio, dtype=np.float64).reshape(-1)
+    fs = SAMPLING_RATE
+    if sample_rate != fs:
+        audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=fs)
+    len_samples = int(INPUT_LENGTH * fs)
+    i0 = int(round(start_sec * fs))
+    seg = audio[i0 : i0 + len_samples]
+    if seg.size < len_samples:
+        seg = np.pad(seg, (0, len_samples - int(seg.size)))
+    sess = get_session(model_path)
+    feats = np.asarray(seg, dtype=np.float32)[np.newaxis, :]
+    mos_sig_raw, mos_bak_raw, mos_ovr_raw = sess.run(None, {"input_1": feats})[0][0]
+    mos_sig, mos_bak, mos_ovr = _polyfit(
+        float(mos_sig_raw),
+        float(mos_bak_raw),
+        float(mos_ovr_raw),
+        personalized=personalized,
+    )
+    return {
+        "sig": mos_sig,
+        "bak": mos_bak,
+        "ovrl": mos_ovr,
+        "sig_raw": float(mos_sig_raw),
+        "bak_raw": float(mos_bak_raw),
+        "ovrl_raw": float(mos_ovr_raw),
+    }
+
+
+def score_annotated_natural_window(
+    audio: np.ndarray,
+    sample_rate: int,
+    window_starts: list[float],
+    weights: list[float],
+    *,
+    model_path: Path | None = None,
+    personalized: bool = False,
+) -> dict:
+    """Score Batch 8/9 ``annotated_natural_window_dnsmos_p835`` windows."""
+    if not window_starts:
+        raise ValueError("no DNSMOS windows to score")
+    if len(weights) != len(window_starts):
+        raise ValueError("weights must match window_starts")
+
+    sig_l: list[float] = []
+    bak_l: list[float] = []
+    ovrl_l: list[float] = []
+    sig_raw_l: list[float] = []
+    bak_raw_l: list[float] = []
+    ovrl_raw_l: list[float] = []
+    windows: list[dict] = []
+
+    for start, weight in zip(window_starts, weights):
+        w = score_window_segment(
+            audio,
+            sample_rate,
+            start,
+            model_path=model_path,
+            personalized=personalized,
+        )
+        sig_l.append(w["sig"])
+        bak_l.append(w["bak"])
+        ovrl_l.append(w["ovrl"])
+        sig_raw_l.append(w["sig_raw"])
+        bak_raw_l.append(w["bak_raw"])
+        ovrl_raw_l.append(w["ovrl_raw"])
+        windows.append(_window_record(start, w, speech_weight_sec=weight))
+
+    wt = np.asarray(weights, dtype=np.float64)
+    if float(wt.sum()) <= 0:
+        wt = np.ones_like(wt)
+    sig = float(np.average(sig_l, weights=wt))
+    bak = float(np.average(bak_l, weights=wt))
+    ovrl = float(np.average(ovrl_l, weights=wt))
+    scored_speech_seconds = float(wt.sum())
+    return {
+        "sig": round(sig, 6),
+        "bak": round(bak, 6),
+        "ovrl": round(ovrl, 6),
+        "sig_raw": round(float(np.average(sig_raw_l, weights=wt)), 6),
+        "bak_raw": round(float(np.average(bak_raw_l, weights=wt)), 6),
+        "ovrl_raw": round(float(np.average(ovrl_raw_l, weights=wt)), 6),
+        "sig_std": round(_weighted_std(sig_l, weights), 6),
+        "bak_std": round(_weighted_std(bak_l, weights), 6),
+        "ovrl_std": round(_weighted_std(ovrl_l, weights), 6),
+        "n_hops": len(window_starts),
+        "n_windows": len(window_starts),
+        "scored_speech_seconds": round(scored_speech_seconds, 6),
+        "windows": windows,
+        "pass": sig > SIG_WARN_MIN,
+        "threshold_sig": SIG_WARN_MIN,
+        "personalized": personalized,
+        "device": session_device(),
+    }
+
+
 def score_audio(
     audio: np.ndarray,
     sample_rate: int,
     *,
     model_path: Path | None = None,
-    personalized: bool = True,
+    personalized: bool = False,
 ) -> dict:
     """Score a mono float waveform with DNSMOS P.835.
 
@@ -158,7 +300,7 @@ def score_audio(
     hop count. Audio shorter than 9.01 s is repeated (Microsoft script behaviour).
 
     ``personalized=True`` uses the cubic polyfit from Microsoft ``dnsmos_local.py
-    -p`` (default here after client-report calibration).
+    -p`` (legacy; Batch 8/9 QA uses non-personalized).
     """
     if audio.ndim > 1:
         audio = np.mean(audio, axis=-1)
@@ -189,6 +331,7 @@ def score_audio(
     sig_l: list[float] = []
     bak_l: list[float] = []
     ovr_l: list[float] = []
+    windows: list[dict] = []
 
     for idx in range(num_hops):
         start = int(idx * hop_len)
@@ -213,6 +356,17 @@ def score_audio(
         sig_l.append(mos_sig)
         bak_l.append(mos_bak)
         ovr_l.append(mos_ovr)
+        windows.append(_window_record(
+            float(idx),
+            {
+                "sig": mos_sig,
+                "bak": mos_bak,
+                "ovrl": mos_ovr,
+                "sig_raw": float(mos_sig_raw),
+                "bak_raw": float(mos_bak_raw),
+                "ovrl_raw": float(mos_ovr_raw),
+            },
+        ))
 
     if not sig_l:
         # Single truncated segment fallback (should be rare after padding).
@@ -232,6 +386,14 @@ def score_audio(
         sig_raw_l = [float(mos_sig_raw)]
         bak_raw_l = [float(mos_bak_raw)]
         ovr_raw_l = [float(mos_ovr_raw)]
+        windows = [_window_record(0.0, {
+            "sig": mos_sig,
+            "bak": mos_bak,
+            "ovrl": mos_ovr,
+            "sig_raw": float(mos_sig_raw),
+            "bak_raw": float(mos_bak_raw),
+            "ovrl_raw": float(mos_ovr_raw),
+        })]
 
     sig = float(np.mean(sig_l))
     bak = float(np.mean(bak_l))
@@ -242,8 +404,14 @@ def score_audio(
         "ovrl": round(ovrl, 6),
         "sig_raw": round(float(np.mean(sig_raw_l)), 6),
         "bak_raw": round(float(np.mean(bak_raw_l)), 6),
-        "ovrl_raw": round(float(np.mean(ovr_raw_l)), 6),
+        "ovrl_raw": round(float(np.mean(ovrl_raw_l)), 6),
+        "sig_std": round(float(np.std(sig_l, ddof=0)), 6),
+        "bak_std": round(float(np.std(bak_l, ddof=0)), 6),
+        "ovrl_std": round(float(np.std(ovrl_l, ddof=0)), 6),
         "n_hops": len(sig_l),
+        "n_windows": len(sig_l),
+        "scored_speech_seconds": round(len(sig_l) * INPUT_LENGTH, 6),
+        "windows": windows,
         "pass": sig > SIG_WARN_MIN,
         "threshold_sig": SIG_WARN_MIN,
         "personalized": personalized,

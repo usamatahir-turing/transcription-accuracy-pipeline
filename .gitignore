@@ -8,6 +8,8 @@ env/
 Conversations/
 riverside_raw/
 chsep_audio_qa/
+batch8and9review/
+
 # --- Generated reports ---
 reports/
 *.xlsx

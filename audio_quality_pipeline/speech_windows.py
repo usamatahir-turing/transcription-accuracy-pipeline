@@ -18,6 +18,16 @@ def peak_dbfs(samples: np.ndarray) -> float:
     return round(20.0 * np.log10(peak), 3)
 
 
+def rms_dbfs(samples: np.ndarray) -> float:
+    """RMS level in dBFS (0 = full scale)."""
+    if samples.size == 0:
+        return float("-inf")
+    rms = float(np.sqrt(np.mean(np.square(samples))))
+    if rms < 1e-12:
+        return float("-inf")
+    return round(20.0 * np.log10(rms), 3)
+
+
 def load_mono_wav(wav_path: Path) -> tuple[np.ndarray, int]:
     audio, sr = sf.read(str(wav_path), dtype="float32", always_2d=False)
     if getattr(audio, "ndim", 1) > 1:

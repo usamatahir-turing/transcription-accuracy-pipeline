@@ -5,7 +5,7 @@ Client review methodology from `sample_review_report_delivery0701_0707_2026.md`:
 | Module | Report section | Metric |
 |--------|----------------|--------|
 | `dnsmos_calculation` | §3.2 | DNSMOS P.835 SIG / BAK / OVRL |
-| `bandwidth_calculation` | §3.3 | Effective bandwidth (LTAS cutoff) |
+| `bandwidth_calculation` | §3.3 | Effective bandwidth (annotated STFT) |
 
 Neither module is wired into `run_pipeline.py` yet — run them separately.
 
@@ -26,25 +26,24 @@ Weights download into `audio_quality_pipeline/models/` on first run.
 
 ## DNSMOS P.835
 
+Aligned with Batch 8/9 QA (`annotated_natural_window_dnsmos_p835`):
+
 | Item | Behaviour |
 |------|-----------|
 | Inputs | Individual speaker `*.wav` next to `*.seglst.json` |
-| Speech mask (default) | **Speech timeline**: keep full file length, zero non-speech seglst gaps (NSV-only dropped) |
-| Polyfit (default) | **Personalized** (Microsoft `dnsmos_local.py -p`) |
+| Window (default) | **Natural window** on seglst speech (0.5 s pre-context, 8.51 s hop inside clusters) |
+| Polyfit (default) | **Non-personalized** (`official_non_personalized`) |
+| Aggregation | Speech-in-window **weighted** mean SIG/BAK/OVRL |
 | Pass rule | `SIG > 3.0` |
 | Mixed tracks | Not scored in v1 |
 
-Defaults were calibrated against client-report Worst-100 SIG (Batch 4 fails).
-Overrides: `--window speech_concat|speech_timeline|full`, `--non-personalized`.
+Legacy Worst-100 calibration: `--window speech_timeline --personalized`.
 
 ```powershell
-python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-KO-SS15-CONVO34
+python -m audio_quality_pipeline.dnsmos_calculation --conversation NV-GR-SS13-CONVO22
 python -m audio_quality_pipeline.dnsmos_calculation --batch delivery_batch_07142026 --overwrite
-# previous behaviour:
-python -m audio_quality_pipeline.dnsmos_calculation --window speech_concat --non-personalized --overwrite
-
-# WAVs in another tree (e.g. riverside_raw); seglst from Conversations (skip if missing)
-python -m audio_quality_pipeline.dnsmos_calculation --conversations riverside_raw --batch delivery_batch_07012026 --seglst-root Conversations --overwrite
+# legacy:
+python -m audio_quality_pipeline.dnsmos_calculation --window speech_timeline --personalized --overwrite
 ```
 
 | Output | Role |
@@ -96,24 +95,20 @@ python -m audio_quality_pipeline.upload_riverside_wavs --overwrite
 
 ## Effective bandwidth (§3.3)
 
-Estimates the highest frequency with **sustained** speech energy (median LTAS
-over speech frames, contiguous ~300 Hz band ≥12 dB above the HF noise floor).
-This is **not** the max FFT bin with any energy.
+Batch 8/9 QA ``annotated-stft-v1-nfft2048-hop1024-profile250``:
 
 | Item | Behaviour |
 |------|-----------|
-| Inputs | Same speech-masked channels as DNSMOS |
+| Inputs | `*.wav` + per-channel **`*.rttm`** (RTTM-masked STFT) |
+| STFT | n_fft=2048, hop=1024; 90 sampled active frames |
+| Cutoff | 250 Hz relative profile; HF cliff on 0.25 kHz grid |
 | Pass rule | `effective_hz > 8000` (severe ≤8 kHz group fails) |
 | Buckets | `le_8khz` / `le_12khz` / `le_16khz` / `gt_16khz` |
 | Spectrograms | `{speaker}_bandwidth_spectrogram.png` (skip with `--no-spectrogram`) |
 
 ```powershell
-python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15
+python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS13-CONVO22
 python -m audio_quality_pipeline.bandwidth_calculation --batch delivery_batch_07142026 --overwrite
-python -m audio_quality_pipeline.bandwidth_calculation --conversation NV-GR-SS08-CONVO15 --no-spectrogram
-
-# WAVs in another tree; seglst from Conversations (skip if missing)
-python -m audio_quality_pipeline.bandwidth_calculation --conversations riverside_raw --batch delivery_batch_07012026 --seglst-root Conversations --overwrite
 ```
 
 | Output | Role |
