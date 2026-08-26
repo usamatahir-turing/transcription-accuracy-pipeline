@@ -119,4 +119,11 @@ def natural_window_starts(seglst_path) -> list[float]:
 
 
 def speech_weight_sec(spans: list[tuple[float, float]], start: float) -> float:
-    return _speech_seconds(spans, start, start + WINDOW_SEC)
+    """Annotated speech in ``[start + context, start + window)`` (Batch 8/9 QA).
+
+    The 0.5 s pre-speech context at each natural window start is excluded from
+    ``speech_weight_sec``, ``speech_samples``, and clipping stats.
+    """
+    return _speech_seconds(
+        spans, start + CONTEXT_BEFORE_SEC, start + WINDOW_SEC,
+    )

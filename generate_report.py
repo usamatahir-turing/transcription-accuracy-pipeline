@@ -13,6 +13,8 @@ Reads ``Conversations/<batch>/<conversation>/metrics.json`` and writes one
   - a **Reference** worksheet with baseline reference numbers
   - per-batch **DetER** tables (column Y→) from ``deter.json`` when present
   - per-batch **overlap ratio** tables (after DetER) from ``overlap_ratio.json``
+  - per-batch **DNSMOS** tables (after overlap) from ``dnsmos.json`` when present
+  - an **erroneous_regions** worksheet (low-SIG DNSMOS windows from ``*_dnsmos.json``)
 
 Human-annotated transcript metrics are compared to the independent vendor
 baseline reference. Delta columns show *annotated transcript − baseline* in
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +45,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from workflow_common import add_scope_args, resolve_conversation_dirs
+
+from audio_quality_pipeline.speech_windows import is_full_scale_clipped
 
 # Baseline reference numbers (independent vendor corpus, identical pipeline).
 REFERENCE = {
@@ -75,6 +80,10 @@ TRAILING_PAD_WIDTH = 14
 
 # DetER tables reserve up to SPK08 speaker columns (layout scales with batch scope).
 MAX_DETER_SPEAKER_COLS = 8
+
+# DNSMOS P.835 SIG pass threshold (matches audio_quality_pipeline.dnsmos_p835).
+DNSMOS_SIG_THRESHOLD = 3.0
+ERRONEOUS_REGIONS_MIN_PER_CHANNEL = 10
 
 # Slim tables: core metrics + colored delta columns (vs baseline reference).
 CONV_HEADERS = [
@@ -197,6 +206,57 @@ TOP_DETER_ERRORS_DEFINITIONS = [
     ),
 ]
 
+ERRONEOUS_REGIONS_HEADERS = [
+    ("Batch", "batch", None, False),
+    ("Conversation", "session_id", None, False),
+    ("Speaker", "speaker", None, False),
+    ("Language", "language", None, False),
+    ("Rank", "rank", "#,##0", False),
+    ("Start (s)", "start_sec", "0.00", False),
+    ("End (s)", "end_sec", "0.00", False),
+    ("SIG", "sig", "0.00", False),
+    ("BAK", "bak", "0.00", False),
+    ("OVRL", "ovrl", "0.00", False),
+    ("Speech wt (s)", "speech_weight_sec", "0.00", False),
+    ("Peak (dBFS)", "speech_peak_dbfs", "0.00", False),
+    ("Full-scale samples", "full_scale_samples", "#,##0", False),
+    ("Clipped", "clipped_label", None, False),
+    ("Pass", "pass_label", None, False),
+]
+
+ERRONEOUS_REGIONS_TEXT_KEYS = {
+    "batch", "session_id", "speaker", "language", "pass_label", "clipped_label",
+}
+
+ERRONEOUS_REGIONS_DEFINITIONS = [
+    (
+        "Selection",
+        "Per speaker channel: all natural-window regions with SIG < 3.0. "
+        "If fewer than 10 fail, pad with the lowest-SIG windows until 10 total. "
+        "If 10 or more fail, include every failing region (no cap).",
+    ),
+    (
+        "Rank",
+        "1 = lowest SIG among selected windows for that speaker.",
+    ),
+    (
+        "SIG / BAK / OVRL",
+        "DNSMOS P.835 scores on annotated natural windows (non-personalized polyfit). "
+        "SIG > 3.0 is the channel pass threshold.",
+    ),
+    (
+        "Speech wt (s)",
+        "Annotated speech seconds inside the window (natural_window placement).",
+    ),
+    (
+        "Peak / full-scale",
+        "Peak dBFS is 0.00 when the loudest speech sample in the window hits "
+        "digital full scale. Full-scale samples counts speech samples at ≥99.99% "
+        "of full scale (Batch 8/9 clip_threshold 0.9999). Clipped = YES when "
+        "full-scale samples > 0 or peak dBFS is exactly 0.",
+    ),
+]
+
 REF_N_SCORED = {
     "AR": 2352, "GR": 2058, "EN": 3157, "ES": 2799, "FR": 3224,
     "IT": 2231, "JA": 5290, "KO": 4336, "PT": 3931, "RU": 3037, "ALL": 32415,
@@ -288,6 +348,23 @@ METRIC_DEFINITIONS = [
         "Diff (overlap)",
         "Overlap ratio % minus the required minimum for that speaker count "
         "(percentage points). Green when above threshold, red when not.",
+    ),
+    (
+        "SIG (SPKxx)",
+        "DNSMOS P.835 speech signal quality per speaker channel — natural-window "
+        "scoring with official non-personalized polyfit. Higher is better; "
+        f"SIG > {DNSMOS_SIG_THRESHOLD} passes.",
+    ),
+    (
+        "DNSMOS Pass",
+        "Per conversation: PASS when every speaker channel SIG exceeds "
+        f"{DNSMOS_SIG_THRESHOLD}; FAIL otherwise.",
+    ),
+    (
+        "DNSMOS Pass (# fail conv.)",
+        "DNSMOS-by-language summary only: FAIL (n) means n conversations in "
+        "that language failed session pass (≥1 channel at or below SIG threshold). "
+        "PASS when all conversations in the language passed.",
     ),
 ]
 
@@ -648,6 +725,216 @@ def discover_overlap_records(root: Path, batch: str | None) -> dict[str, list[di
     return dict(sorted(batches.items()))
 
 
+def load_dnsmos(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def dnsmos_to_record(batch: str, data: dict, language: str = "") -> dict:
+    """Flatten ``dnsmos.json`` into a row with one SIG column per speaker channel."""
+    lang = language or derive_language(data.get("session_id", ""))
+    conv = data.get("conversation") or {}
+    speakers = data.get("speakers") or {}
+    record: dict = {
+        "batch": batch,
+        "session_id": data.get("session_id", ""),
+        "language": lang,
+        "dnsmos_pass": conv.get("pass"),
+    }
+    for slot, spk in _ordered_deter_slots(speakers):
+        dnsmos = (speakers.get(spk) or {}).get("dnsmos") or {}
+        record[slot] = dnsmos.get("sig")
+    record["dnsmos_pass_label"] = (
+        "PASS" if record["dnsmos_pass"] else "FAIL"
+        if record["dnsmos_pass"] is not None else "—"
+    )
+    return record
+
+
+def discover_dnsmos_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
+    """Return {batch_name: [DNSMOS rows]} for conversations with dnsmos.json."""
+    batches: dict[str, list[dict]] = defaultdict(list)
+    for conv_dir in resolve_conversation_dirs(root, batch, None):
+        dnsmos_path = conv_dir / "dnsmos.json"
+        if not dnsmos_path.is_file():
+            continue
+        batch_name = conv_dir.parent.name
+        metrics_path = conv_dir / "metrics.json"
+        language = ""
+        if metrics_path.is_file():
+            language = load_metrics(metrics_path).get("language") or ""
+        data = load_dnsmos(dnsmos_path)
+        batches[batch_name].append(
+            dnsmos_to_record(batch_name, data, language=language))
+    for batch_name in batches:
+        batches[batch_name].sort(key=lambda r: r["session_id"])
+    return dict(sorted(batches.items()))
+
+
+def dnsmos_language_summary(
+    records: list[dict], speaker_cols: list[str],
+) -> list[dict]:
+    """Average per-speaker SIG within each language (+ ALL row)."""
+    by_lang: dict[str, list[dict]] = defaultdict(list)
+    for record in records:
+        by_lang[record["language"]].append(record)
+
+    def _summarize(group: list[dict], label: str) -> dict:
+        row: dict = {
+            "language": label,
+            "n_conversations": len(group),
+        }
+        n_fail = sum(1 for r in group if r.get("dnsmos_pass") is False)
+        if n_fail:
+            row["dnsmos_pass_label"] = f"FAIL ({n_fail})"
+        else:
+            row["dnsmos_pass_label"] = "PASS" if group else "—"
+        for spk in speaker_cols:
+            vals = [r[spk] for r in group if r.get(spk) is not None]
+            row[spk] = _avg(vals)
+        return row
+
+    rows = [_summarize(by_lang[lang], lang) for lang in sorted(by_lang)]
+    if rows:
+        rows.append(_summarize(records, "ALL"))
+    return rows
+
+
+def build_dnsmos_lang_headers(speaker_cols: list[str]) -> list[tuple]:
+    headers: list[tuple] = [
+        ("Language", "language", None, False),
+        ("Conv.", "n_conversations", "#,##0", False),
+    ]
+    for spk in speaker_cols:
+        headers.append((spk, spk, "0.00", "dnsmos"))
+    headers.append(("Pass (# fail conv.)", "dnsmos_pass_label", None, False))
+    return headers
+
+
+def build_dnsmos_conv_headers(
+    speaker_cols: list[str], *, include_batch: bool = False,
+) -> list[tuple]:
+    headers: list[tuple] = []
+    if include_batch:
+        headers.append(("Batch", "batch", None, False))
+    headers += [
+        ("Conversation", "session_id", None, False),
+        ("Language", "language", None, False),
+    ]
+    for spk in speaker_cols:
+        headers.append((spk, spk, "0.00", "dnsmos"))
+    headers.append(("Pass", "dnsmos_pass_label", None, False))
+    return headers
+
+
+def select_erroneous_dnsmos_windows(
+    windows: list[dict],
+    *,
+    threshold: float = DNSMOS_SIG_THRESHOLD,
+    min_count: int = ERRONEOUS_REGIONS_MIN_PER_CHANNEL,
+) -> list[dict]:
+    """Pick review windows: all SIG failures; pad to ``min_count`` when needed."""
+    failing = [
+        w for w in windows
+        if w.get("sig") is not None and w["sig"] < threshold
+    ]
+    if len(failing) >= min_count:
+        return sorted(
+            failing,
+            key=lambda w: (w["sig"], w.get("start_sec") or 0.0),
+        )
+
+    selected_keys = {
+        (w.get("start_sec"), w.get("end_sec")) for w in failing
+    }
+    selected = list(failing)
+    ranked = sorted(
+        windows,
+        key=lambda w: (
+            w.get("sig") if w.get("sig") is not None else float("inf"),
+            w.get("start_sec") or 0.0,
+        ),
+    )
+    for window in ranked:
+        if len(selected) >= min_count:
+            break
+        key = (window.get("start_sec"), window.get("end_sec"))
+        if key not in selected_keys:
+            selected.append(window)
+            selected_keys.add(key)
+    return sorted(
+        selected,
+        key=lambda w: (
+            w.get("sig") if w.get("sig") is not None else float("inf"),
+            w.get("start_sec") or 0.0,
+        ),
+    )
+
+
+def _window_peak_dbfs(speech_peak: float | None) -> float | None:
+    if speech_peak is None or speech_peak < 1e-12:
+        return None
+    return round(20.0 * math.log10(speech_peak), 2)
+
+
+def discover_erroneous_dnsmos_regions(
+    root: Path, batch: str | None,
+) -> list[dict]:
+    """Flatten selected low-SIG DNSMOS windows from ``*_dnsmos.json`` files."""
+    rows: list[dict] = []
+    for conv_dir in resolve_conversation_dirs(root, batch, None):
+        batch_name = conv_dir.parent.name
+        language = derive_language(conv_dir.name)
+        for path in sorted(conv_dir.glob("*_dnsmos.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            windows = data.get("windows")
+            if not windows:
+                continue
+            session_id = data.get("session_id", conv_dir.name)
+            speaker = data.get(
+                "speaker", path.stem.replace("_dnsmos", ""),
+            )
+            selected = select_erroneous_dnsmos_windows(windows)
+            for rank, window in enumerate(selected, start=1):
+                sig = window.get("sig")
+                speech_peak = window.get("speech_peak")
+                peak_dbfs = _window_peak_dbfs(speech_peak)
+                full_scale = int(window.get("full_scale_samples") or 0)
+                peak_dbfs_exact = None
+                if speech_peak is not None and speech_peak >= 1e-12:
+                    peak_dbfs_exact = float(20.0 * math.log10(speech_peak))
+                clipped = is_full_scale_clipped(
+                    full_scale_samples=full_scale,
+                    speech_peak_dbfs=peak_dbfs_exact,
+                )
+                rows.append({
+                    "batch": batch_name,
+                    "session_id": session_id,
+                    "speaker": speaker,
+                    "language": language,
+                    "rank": rank,
+                    "start_sec": window.get("start_sec"),
+                    "end_sec": window.get("end_sec"),
+                    "sig": sig,
+                    "bak": window.get("bak"),
+                    "ovrl": window.get("ovrl"),
+                    "speech_weight_sec": window.get("speech_weight_sec"),
+                    "speech_peak_dbfs": peak_dbfs,
+                    "full_scale_samples": full_scale,
+                    "clipped_label": "YES" if clipped else "NO",
+                    "pass_label": (
+                        "PASS" if sig is not None and sig > DNSMOS_SIG_THRESHOLD
+                        else "FAIL" if sig is not None else "—"
+                    ),
+                })
+    rows.sort(key=lambda r: (
+        r["batch"], r["session_id"], r["speaker"], r.get("rank") or 0,
+    ))
+    return rows
+
+
 def discover_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
     """Return {batch_name: [conversation records]} for conversations with metrics.json."""
     batches: dict[str, list[dict]] = defaultdict(list)
@@ -658,6 +945,39 @@ def discover_records(root: Path, batch: str | None) -> dict[str, list[dict]]:
         batch_name = conv_dir.parent.name
         data = load_metrics(metrics_path)
         batches[batch_name].append(metrics_to_record(batch_name, data))
+    for batch_name in batches:
+        batches[batch_name].sort(key=lambda r: r["session_id"])
+    return dict(sorted(batches.items()))
+
+
+def discover_conversation_shell_records(
+    root: Path, batch: str | None,
+) -> dict[str, list[dict]]:
+    """Minimal conversation rows when ``metrics.json`` is absent (DNSMOS-only batches)."""
+    batches: dict[str, list[dict]] = defaultdict(list)
+    for conv_dir in resolve_conversation_dirs(root, batch, None):
+        batch_name = conv_dir.parent.name
+        session_id = conv_dir.name
+        batches[batch_name].append(enrich_with_deltas({
+            "batch": batch_name,
+            "session_id": session_id,
+            "language": derive_language(session_id),
+            "n_scored": 0,
+            "wer_pct": None,
+            "cer_pct": None,
+            "wcmr_pct": None,
+            "gt3_pct": None,
+            "ref_words": 0,
+            "ref_chars": 0,
+            "wer_s": 0,
+            "wer_d": 0,
+            "wer_i": 0,
+            "cer_s": 0,
+            "cer_d": 0,
+            "cer_i": 0,
+            "n_mismatch": 0,
+            "gt3_n": 0,
+        }))
     for batch_name in batches:
         batches[batch_name].sort(key=lambda r: r["session_id"])
     return dict(sorted(batches.items()))
@@ -994,6 +1314,20 @@ def _overlap_cell_style(record: dict) -> tuple[PatternFill | None, Font]:
     return None, FONT_BODY
 
 
+def _dnsmos_cell_style(val, key: str) -> tuple[PatternFill | None, Font]:
+    if key == "dnsmos_pass_label":
+        if val == "PASS" or (isinstance(val, str) and val.startswith("PASS")):
+            return FILL_DETER_PASS_LABEL, FONT_DELTA_GOOD
+        if val == "FAIL" or (isinstance(val, str) and val.startswith("FAIL")):
+            return FILL_DETER_FAIL_LABEL, FONT_DELTA_BAD
+        return None, FONT_BODY
+    if isinstance(val, (int, float)) and key.startswith("SPK"):
+        if val > DNSMOS_SIG_THRESHOLD:
+            return FILL_DETER_PASS, FONT_DELTA_GOOD
+        return FILL_DETER_FAIL, FONT_DELTA_BAD
+    return None, FONT_BODY
+
+
 def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
                  total_labels: set[str] | None = None,
                  start_col: int = 1) -> int:
@@ -1007,7 +1341,7 @@ def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
         cell.alignment = ALIGN_CENTER
         cell.border = BORDER
 
-    text_keys = {"session_id", "language", "batch", "deter_pass_label"}
+    text_keys = {"session_id", "language", "batch", "deter_pass_label", "dnsmos_pass_label"}
     for i, record in enumerate(rows):
         r = start_row + 1 + i
         is_total = record.get("language") in total_labels
@@ -1055,10 +1389,33 @@ def _write_table(ws, start_row: int, headers: list[tuple], rows: list[dict],
                 cell.alignment = (
                     ALIGN_LEFT if key in text_keys else ALIGN_RIGHT
                 )
+            elif col_kind == "dnsmos":
+                fill, font = _dnsmos_cell_style(val, key)
+                cell.font = font
+                if fill is not None:
+                    cell.fill = fill
+                elif is_total:
+                    cell.fill = FILL_TOTAL
+                    cell.font = FONT_TOTAL
+                elif is_alt:
+                    cell.fill = FILL_ALT
+                if fmt and val is not None:
+                    cell.number_format = fmt
+                cell.alignment = (
+                    ALIGN_LEFT if key in text_keys else ALIGN_RIGHT
+                )
             else:
                 cell.font = FONT_TOTAL if is_total else FONT_BODY
                 if key == "deter_pass_label" and val in ("PASS", "FAIL"):
                     fill, font = _deter_cell_style(val, key)
+                    cell.font = font
+                    if fill is not None:
+                        cell.fill = fill
+                elif key == "dnsmos_pass_label" and (
+                    val in ("PASS", "FAIL")
+                    or (isinstance(val, str) and val.startswith(("PASS", "FAIL")))
+                ):
+                    fill, font = _dnsmos_cell_style(val, key)
                     cell.font = font
                     if fill is not None:
                         cell.fill = fill
@@ -1161,11 +1518,15 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
                          deter_conv_records: list[dict] | None = None,
                          deter_lang_records: list[dict] | None = None,
                          overlap_conv_headers: list[tuple] | None = None,
-                         overlap_conv_records: list[dict] | None = None) -> None:
-    """Transcription tables (A→), optional DetER, optional overlap after DetER."""
+                         overlap_conv_records: list[dict] | None = None,
+                         dnsmos_conv_headers: list[tuple] | None = None,
+                         dnsmos_conv_records: list[dict] | None = None,
+                         dnsmos_lang_records: list[dict] | None = None) -> None:
+    """Transcription tables (A→), optional DetER, overlap, DNSMOS blocks."""
     conv_end_col = CONV_COL + len(conv_headers) - 1
     deter_gap_col, deter_lang_col = _deter_block_cols(conv_headers)
     content_end_col = conv_end_col
+    block_end_col = conv_end_col
     deter_conv_col: int | None = None
     deter_lang_headers: list[tuple] = []
     if deter_conv_headers and deter_conv_records is not None:
@@ -1174,8 +1535,8 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         deter_lang_width = len(deter_lang_headers)
         deter_mid_gap = deter_lang_col + deter_lang_width
         deter_conv_col = deter_mid_gap + 1
-        content_end_col = max(
-            content_end_col, deter_conv_col + len(deter_conv_headers) - 1)
+        block_end_col = deter_conv_col + len(deter_conv_headers) - 1
+        content_end_col = max(content_end_col, block_end_col)
 
     overlap_gap_col: int | None = None
     overlap_col: int | None = None
@@ -1183,8 +1544,22 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         deter_width = len(deter_conv_headers) if deter_conv_headers else 0
         overlap_gap_col, overlap_col = _overlap_block_cols(
             conv_end_col, deter_conv_col, deter_width)
-        content_end_col = max(
-            content_end_col, overlap_col + len(overlap_conv_headers) - 1)
+        block_end_col = overlap_col + len(overlap_conv_headers) - 1
+        content_end_col = max(content_end_col, block_end_col)
+
+    dnsmos_gap_col: int | None = None
+    dnsmos_lang_col: int | None = None
+    dnsmos_conv_col: int | None = None
+    dnsmos_lang_headers: list[tuple] = []
+    if dnsmos_conv_headers and dnsmos_conv_records is not None:
+        dnsmos_gap_col = block_end_col + 1
+        dnsmos_lang_col = dnsmos_gap_col + 1
+        dnsmos_lang_headers = build_dnsmos_lang_headers(
+            speaker_columns(dnsmos_conv_records))
+        dnsmos_mid_gap = dnsmos_lang_col + len(dnsmos_lang_headers)
+        dnsmos_conv_col = dnsmos_mid_gap + 1
+        block_end_col = dnsmos_conv_col + len(dnsmos_conv_headers) - 1
+        content_end_col = max(content_end_col, block_end_col)
 
     padded_end_col = content_end_col + TRAILING_PAD_COLS
     row = _write_title_block(ws, title, subtitle, padded_end_col)
@@ -1220,6 +1595,19 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
             f"Overlap per conversation ({len(overlap_conv_records)} session(s))",
             len(overlap_conv_headers), start_col=overlap_col,
         )
+    if dnsmos_conv_col is not None and dnsmos_lang_records is not None:
+        dnsmos_lang_headers = build_dnsmos_lang_headers(
+            speaker_columns(dnsmos_conv_records))
+        _write_section_header(
+            ws, table_row,
+            "DNSMOS by language (avg SIG per channel)",
+            len(dnsmos_lang_headers), start_col=dnsmos_lang_col,
+        )
+        _write_section_header(
+            ws, table_row,
+            f"DNSMOS per conversation ({len(dnsmos_conv_records)} session(s))",
+            len(dnsmos_conv_headers), start_col=dnsmos_conv_col,
+        )
     row = max(row, table_row + 1)
 
     header_row = row
@@ -1251,6 +1639,21 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         if overlap_gap_col is not None:
             _style_gap_column(ws, table_row, data_end - 1, col=overlap_gap_col)
 
+    if dnsmos_conv_col is not None and dnsmos_conv_records is not None:
+        dnsmos_lang_headers = build_dnsmos_lang_headers(
+            speaker_columns(dnsmos_conv_records))
+        dnsmos_lang_end = _write_table(
+            ws, row, dnsmos_lang_headers, dnsmos_lang_records or [],
+            start_col=dnsmos_lang_col)
+        dnsmos_conv_end = _write_table(
+            ws, row, dnsmos_conv_headers, dnsmos_conv_records,
+            start_col=dnsmos_conv_col)
+        data_end = max(data_end, dnsmos_lang_end, dnsmos_conv_end)
+        dnsmos_mid_gap = dnsmos_lang_col + len(dnsmos_lang_headers)
+        if dnsmos_gap_col is not None:
+            _style_gap_column(ws, table_row, data_end - 1, col=dnsmos_gap_col)
+        _style_gap_column(ws, table_row, data_end - 1, col=dnsmos_mid_gap)
+
     _style_gap_column(ws, table_row, data_end - 1)
 
     ws.freeze_panes = ws.cell(row=header_row + 1, column=LANG_COL)
@@ -1263,13 +1666,21 @@ def _write_metrics_sheet(ws, title: str, subtitle: str,
         col_ranges.append((deter_conv_col, deter_conv_col + len(deter_conv_headers) - 1))
     if overlap_col is not None and overlap_conv_headers is not None:
         col_ranges.append((overlap_col, overlap_col + len(overlap_conv_headers) - 1))
+    if dnsmos_conv_col is not None and dnsmos_conv_headers is not None:
+        col_ranges.append((
+            dnsmos_lang_col, dnsmos_lang_col + len(dnsmos_lang_headers) - 1,
+        ))
+        col_ranges.append((
+            dnsmos_conv_col, dnsmos_conv_col + len(dnsmos_conv_headers) - 1,
+        ))
     _autosize_columns(ws, col_ranges)
     _apply_batch_sheet_scroll_pad(ws, table_row, data_end - 1, content_end_col)
 
 
 def write_batch_sheet(ws, batch_name: str, records: list[dict], generated: str,
                       deter_records: list[dict] | None = None,
-                      overlap_records: list[dict] | None = None) -> None:
+                      overlap_records: list[dict] | None = None,
+                      dnsmos_records: list[dict] | None = None) -> None:
     title = f"Batch — {batch_name}"
     subtitle = (
         f"Human-annotated transcript vs Qwen3-ASR  ·  vs baseline reference  ·  "
@@ -1289,17 +1700,28 @@ def write_batch_sheet(ws, batch_name: str, records: list[dict], generated: str,
             "overlap_conv_headers": build_overlap_conv_headers(),
             "overlap_conv_records": overlap_records,
         }
+    dnsmos_kwargs: dict = {}
+    if dnsmos_records:
+        speaker_cols = speaker_columns(dnsmos_records)
+        dnsmos_kwargs = {
+            "dnsmos_conv_headers": build_dnsmos_conv_headers(speaker_cols),
+            "dnsmos_conv_records": dnsmos_records,
+            "dnsmos_lang_records": dnsmos_language_summary(
+                dnsmos_records, speaker_cols),
+        }
     _write_metrics_sheet(
         ws, title, subtitle,
         CONV_HEADERS, records, language_summary(records),
         **deter_kwargs,
         **overlap_kwargs,
+        **dnsmos_kwargs,
     )
 
 
 def write_all_batches_sheet(ws, all_records: list[dict], generated: str,
                             all_deter_records: list[dict] | None = None,
-                            all_overlap_records: list[dict] | None = None) -> None:
+                            all_overlap_records: list[dict] | None = None,
+                            all_dnsmos_records: list[dict] | None = None) -> None:
     conv_headers = [("Batch", "batch", None, False)] + list(CONV_HEADERS)
     title = "All batches — combined"
     subtitle = (
@@ -1322,11 +1744,22 @@ def write_all_batches_sheet(ws, all_records: list[dict], generated: str,
             "overlap_conv_headers": build_overlap_conv_headers(include_batch=True),
             "overlap_conv_records": all_overlap_records,
         }
+    dnsmos_kwargs: dict = {}
+    if all_dnsmos_records:
+        speaker_cols = speaker_columns(all_dnsmos_records)
+        dnsmos_kwargs = {
+            "dnsmos_conv_headers": build_dnsmos_conv_headers(
+                speaker_cols, include_batch=True),
+            "dnsmos_conv_records": all_dnsmos_records,
+            "dnsmos_lang_records": dnsmos_language_summary(
+                all_dnsmos_records, speaker_cols),
+        }
     _write_metrics_sheet(
         ws, title, subtitle,
         conv_headers, all_records, language_summary(all_records),
         **deter_kwargs,
         **overlap_kwargs,
+        **dnsmos_kwargs,
     )
 
 
@@ -1475,6 +1908,53 @@ def write_top_erroneous_segments_deter_sheet(
     _style_trailing_pad(ws, content_end_col)
 
 
+def write_erroneous_regions_sheet(ws, rows: list[dict], generated: str) -> None:
+    """Low-SIG DNSMOS windows per speaker — from ``*_dnsmos.json``."""
+    content_end_col = len(ERRONEOUS_REGIONS_HEADERS)
+    padded_end_col = _padded_end_col(content_end_col)
+    row = _write_title_block(
+        ws,
+        "Erroneous regions (DNSMOS)",
+        f"Per-speaker low-SIG natural windows  ·  "
+        f"{len(rows)} row(s)  ·  Generated {generated} UTC",
+        padded_end_col,
+    )
+    row += 1
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=padded_end_col)
+    note = ws.cell(
+        row=row, column=1,
+        value=(
+            f"All windows with SIG < {DNSMOS_SIG_THRESHOLD} per channel; padded to "
+            f"{ERRONEOUS_REGIONS_MIN_PER_CHANNEL} lowest-SIG windows when fewer fail. "
+            "Clipped = full-scale samples > 0 or peak dBFS = 0.00. "
+            "Use Start/End to locate audio in SPK*.wav."
+        ),
+    )
+    note.font = FONT_LEGEND
+    note.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws.row_dimensions[row].height = 36
+    row += 1
+
+    header_row = row
+    _write_top_errors_table(
+        ws, row, ERRONEOUS_REGIONS_HEADERS, rows,
+        text_keys=ERRONEOUS_REGIONS_TEXT_KEYS,
+        pass_label_key="pass_label",
+    )
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+    col_widths = {
+        "batch": 24,
+        "session_id": 22,
+        "speaker": 8,
+        "language": 8,
+    }
+    for i, (_, key, _, _) in enumerate(ERRONEOUS_REGIONS_HEADERS):
+        letter = get_column_letter(1 + i)
+        ws.column_dimensions[letter].width = col_widths.get(key, 11)
+    _style_trailing_pad(ws, content_end_col)
+
+
 def write_definitions_sheet(ws) -> None:
     """Glossary of metric columns used in the batch / All Batches tabs."""
     content_end_col = 2
@@ -1564,6 +2044,31 @@ def write_definitions_sheet(ws) -> None:
                 d_cell.fill = FILL_ALT
             ws.row_dimensions[r].height = 36
 
+    if ERRONEOUS_REGIONS_DEFINITIONS:
+        row = row + 1 + len(TOP_DETER_ERRORS_DEFINITIONS) + 1
+        row = _write_section_header(
+            ws, row, "Erroneous regions (DNSMOS) tab", content_end_col)
+        for col, label in enumerate(("Column", "Definition"), start=1):
+            cell = ws.cell(row=row, column=col, value=label)
+            cell.font = FONT_HEADER
+            cell.fill = FILL_HEADER
+            cell.alignment = ALIGN_CENTER
+            cell.border = BORDER
+        for i, (metric, definition) in enumerate(ERRONEOUS_REGIONS_DEFINITIONS):
+            r = row + 1 + i
+            m_cell = ws.cell(row=r, column=1, value=metric)
+            m_cell.font = FONT_BODY
+            m_cell.border = BORDER
+            m_cell.alignment = ALIGN_LEFT
+            d_cell = ws.cell(row=r, column=2, value=definition)
+            d_cell.font = FONT_BODY
+            d_cell.border = BORDER
+            d_cell.alignment = wrap
+            if i % 2 == 1:
+                m_cell.fill = FILL_ALT
+                d_cell.fill = FILL_ALT
+            ws.row_dimensions[r].height = 36
+
     ws.freeze_panes = ws.cell(row=freeze_row, column=1)
     _style_trailing_pad(ws, content_end_col)
 
@@ -1572,9 +2077,12 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
                    generated: str,
                    deter_batches: dict[str, list[dict]] | None = None,
                    overlap_batches: dict[str, list[dict]] | None = None,
-                   top_deter_error_rows: list[dict] | None = None) -> Workbook:
+                   dnsmos_batches: dict[str, list[dict]] | None = None,
+                   top_deter_error_rows: list[dict] | None = None,
+                   erroneous_region_rows: list[dict] | None = None) -> Workbook:
     deter_batches = deter_batches or {}
     overlap_batches = overlap_batches or {}
+    dnsmos_batches = dnsmos_batches or {}
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -1590,6 +2098,7 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
     all_records: list[dict] = []
     all_deter_records: list[dict] = []
     all_overlap_records: list[dict] = []
+    all_dnsmos_records: list[dict] = []
     for batch_name, records in batches.items():
         all_records.extend(records)
         deter_records = deter_batches.get(batch_name)
@@ -1598,6 +2107,9 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
         overlap_records = overlap_batches.get(batch_name)
         if overlap_records:
             all_overlap_records.extend(overlap_records)
+        dnsmos_records = dnsmos_batches.get(batch_name)
+        if dnsmos_records:
+            all_dnsmos_records.extend(dnsmos_records)
 
     if all_records:
         all_records.sort(key=lambda r: (r["batch"], r["session_id"]))
@@ -1607,9 +2119,13 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
         all_overlap = all_overlap_records or None
         if all_overlap:
             all_overlap.sort(key=lambda r: (r["batch"], r["session_id"]))
+        all_dnsmos = all_dnsmos_records or None
+        if all_dnsmos:
+            all_dnsmos.sort(key=lambda r: (r["batch"], r["session_id"]))
         ws_all = wb.create_sheet(
             title=_safe_sheet_name("All Batches"), index=sheet_idx)
-        write_all_batches_sheet(ws_all, all_records, generated, all_deter, all_overlap)
+        write_all_batches_sheet(
+            ws_all, all_records, generated, all_deter, all_overlap, all_dnsmos)
         sheet_idx += 1
 
     for batch_name, records in sorted(
@@ -1617,9 +2133,10 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
     ):
         deter_records = deter_batches.get(batch_name)
         overlap_records = overlap_batches.get(batch_name)
+        dnsmos_records = dnsmos_batches.get(batch_name)
         ws = wb.create_sheet(title=_safe_sheet_name(batch_name), index=sheet_idx)
         write_batch_sheet(ws, batch_name, records, generated, deter_records,
-                          overlap_records)
+                          overlap_records, dnsmos_records)
         sheet_idx += 1
 
     if top_error_rows:
@@ -1632,6 +2149,12 @@ def build_workbook(batches: dict[str, list[dict]], top_error_rows: list[dict],
         ws_deter = wb.create_sheet(
             title=_safe_sheet_name("top_erroneous_segments_deter"), index=sheet_idx)
         write_top_erroneous_segments_deter_sheet(ws_deter, top_deter_error_rows, generated)
+        sheet_idx += 1
+
+    if erroneous_region_rows:
+        ws_dnsmos = wb.create_sheet(
+            title=_safe_sheet_name("erroneous_regions"), index=sheet_idx)
+        write_erroneous_regions_sheet(ws_dnsmos, erroneous_region_rows, generated)
 
     return wb
 
@@ -1653,19 +2176,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}")
         return 1
 
-    if not batches:
-        print("No metrics.json files found in scope.")
-        return 1
-
     deter_batches = discover_deter_records(root, args.batch)
     overlap_batches = discover_overlap_records(root, args.batch)
+    dnsmos_batches = discover_dnsmos_records(root, args.batch)
     top_error_rows = discover_top_error_segments(root, args.batch)
     top_deter_error_rows = discover_top_deter_error_segments(root, args.batch)
+    erroneous_region_rows = discover_erroneous_dnsmos_regions(root, args.batch)
+
+    if not batches:
+        if not (deter_batches or overlap_batches or dnsmos_batches):
+            print("No metrics.json, dnsmos.json, deter.json, or overlap_ratio.json in scope.")
+            return 1
+        try:
+            batches = discover_conversation_shell_records(root, args.batch)
+        except FileNotFoundError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        print(
+            "NOTE: No metrics.json in scope — transcription columns will be empty; "
+            "using conversation folders for DNSMOS / DetER / overlap tables."
+        )
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     wb = build_workbook(
         batches, top_error_rows, generated, deter_batches,
-        overlap_batches, top_deter_error_rows or None,
+        overlap_batches, dnsmos_batches, top_deter_error_rows or None,
+        erroneous_region_rows or None,
     )
 
     out_path = Path(args.output)
@@ -1675,6 +2211,7 @@ def main(argv: list[str] | None = None) -> int:
     n_conv = sum(len(v) for v in batches.values())
     n_deter = sum(len(v) for v in deter_batches.values())
     n_overlap = sum(len(v) for v in overlap_batches.values())
+    n_dnsmos = sum(len(v) for v in dnsmos_batches.values())
     deter_note = (
         f" · DetER on {n_deter} conversation(s)"
         if n_deter else " · no deter.json found"
@@ -1682,6 +2219,10 @@ def main(argv: list[str] | None = None) -> int:
     overlap_note = (
         f" · overlap on {n_overlap} conversation(s)"
         if n_overlap else " · no overlap_ratio.json found"
+    )
+    dnsmos_note = (
+        f" · DNSMOS on {n_dnsmos} conversation(s)"
+        if n_dnsmos else " · no dnsmos.json found"
     )
     top_note = (
         f" + top_erroneous_segments ({len(top_error_rows)} row(s))"
@@ -1691,11 +2232,16 @@ def main(argv: list[str] | None = None) -> int:
         f" + top_erroneous_segments_deter ({len(top_deter_error_rows)} row(s))"
         if top_deter_error_rows else ""
     )
+    dnsmos_seg_note = (
+        f" + erroneous_regions ({len(erroneous_region_rows)} row(s))"
+        if erroneous_region_rows else ""
+    )
     print(f"Wrote {out_path.resolve()}")
     print(
         f"  Tabs: Definitions, Reference, All Batches, "
         f"{len(batches)} batch tab(s) (newest first)"
-        f"{top_note}{deter_seg_note}  ({n_conv} conversation(s){deter_note}{overlap_note})."
+        f"{top_note}{deter_seg_note}{dnsmos_seg_note}  "
+        f"({n_conv} conversation(s){deter_note}{overlap_note}{dnsmos_note})."
     )
     for batch_name, records in sorted(
         batches.items(), key=lambda item: _batch_sort_key(item[0]),

@@ -1,10 +1,11 @@
-"""Run DetER + WER + overlap pipelines for Conversations data.
+"""Run DetER + WER + overlap + DNSMOS pipelines for Conversations data.
 
 Default (full) run:
 
   1. ``diarization_pipeline.deter_calculation`` - DetER scoring
   2. ``conversation_structure_pipeline.overlap_calculation`` - overlap ratio
-  3. ``word_error_pipeline`` - extract -> ASR -> normalize -> rank -> metrics
+  3. ``audio_quality_pipeline.dnsmos_calculation`` - DNSMOS P.835 scoring
+  4. ``word_error_pipeline`` - extract -> ASR -> normalize -> rank -> metrics
 
 ``generate_report.py`` is intentionally excluded; run it manually after metrics exist.
 
@@ -93,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip overlap ratio (conversation_structure_pipeline).",
     )
     parser.add_argument(
+        "--skip-dnsmos",
+        action="store_true",
+        help="Skip DNSMOS P.835 scoring (audio_quality_pipeline).",
+    )
+    parser.add_argument(
         "--sad-mode",
         choices=("sortformer", "silero", "union"),
         default="union",
@@ -145,8 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.skip_deter and args.skip_wer and args.skip_overlap:
-        print("ERROR: --skip-deter, --skip-wer, and --skip-overlap cannot all be set.")
+    if args.skip_deter and args.skip_wer and args.skip_overlap and args.skip_dnsmos:
+        print(
+            "ERROR: --skip-deter, --skip-wer, --skip-overlap, and --skip-dnsmos "
+            "cannot all be set."
+        )
         return 1
 
     steps: list[tuple[str, Callable[[list[str] | None], int], list[str]]] = []
@@ -166,6 +175,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         steps.append(("overlap ratio", overlap_main, scope))
+    if not args.skip_dnsmos:
+        from audio_quality_pipeline.dnsmos_calculation import main as dnsmos_main
+
+        steps.append(("DNSMOS P.835", dnsmos_main, scope))
     if not args.skip_wer:
         from word_error_pipeline.compute_metrics import main as metrics_main
         from word_error_pipeline.normalize_transcripts import main as normalize_main

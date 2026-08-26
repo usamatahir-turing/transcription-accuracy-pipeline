@@ -31,13 +31,18 @@ from audio_quality_pipeline.dnsmos_p835 import (
     session_device,
 )
 from audio_quality_pipeline.natural_window_dnsmos import (
+    CONTEXT_BEFORE_SEC,
     natural_window_starts,
     speech_weight_sec,
+    _speech_seconds,
+    CLIP_THRESHOLD,
 )
 from audio_quality_pipeline.speech_windows import (
+    channel_speech_level_stats,
     extract_speech_audio,
     extract_speech_timeline_audio,
     rms_dbfs,
+    window_speech_level_stats,
 )
 from diarization_pipeline.seglst_to_rttm import load_speech_seglst_rows
 from diarization_pipeline.common import channel_id_from_path, speaker_output_name
@@ -87,18 +92,10 @@ def _speech_peak_dbfs(
     sample_rate: int,
     spans: list[tuple[float, float]] | None,
 ) -> float | None:
-    chunks = _speech_chunks(audio, sample_rate, spans)
-    if chunks is None:
-        from audio_quality_pipeline.speech_windows import peak_dbfs
-
-        return peak_dbfs(np.asarray(audio, dtype=np.float32))
-    if not chunks:
-        return None
-    import numpy as np
-
-    from audio_quality_pipeline.speech_windows import peak_dbfs
-
-    return peak_dbfs(np.concatenate(chunks))
+    stats = channel_speech_level_stats(
+        audio, sample_rate, spans, clip_threshold=CLIP_THRESHOLD,
+    )
+    return stats["speech_peak_dbfs"]
 
 
 def _speech_chunks(
@@ -137,6 +134,45 @@ def _enrich_window_speech_weights(
             wt = round(speech_weight_sec(spans, row["start_sec"]), 6)
             row["speech_weight_sec"] = wt
             row["speech_in_window_sec"] = wt
+    return windows
+
+
+def _enrich_window_speech_levels(
+    windows: list[dict],
+    *,
+    audio,
+    sample_rate: int,
+    window: str,
+    spans: list[tuple[float, float]] | None,
+) -> list[dict]:
+    """Add per-window speech peak / full-scale clipping (Batch 8/9 field names)."""
+    speech_only = window == WINDOW_SPEECH_CONCAT
+    natural = window == WINDOW_NATURAL
+    for row in windows:
+        start_sec = float(row["start_sec"])
+        end_sec = float(row["end_sec"])
+        weight = row.get("speech_weight_sec")
+        if spans and not speech_only and weight is not None:
+            row["speech_in_window_sec"] = round(
+                _speech_seconds(spans, start_sec, end_sec), 6,
+            )
+        clip_start = start_sec
+        if natural and weight is not None:
+            clip_start = start_sec + CONTEXT_BEFORE_SEC
+        stats = window_speech_level_stats(
+            audio,
+            sample_rate,
+            clip_start,
+            end_sec,
+            spans if not speech_only else None,
+            clip_threshold=CLIP_THRESHOLD,
+            speech_only_slice=speech_only,
+            max_speech_sec=float(weight) if weight is not None else None,
+        )
+        row["speech_peak"] = stats["speech_peak"]
+        row["full_scale_samples"] = stats["full_scale_samples"]
+        row["speech_samples"] = stats["speech_samples"]
+        row["speech_sum_squares"] = stats["speech_sum_squares"]
     return windows
 
 
@@ -249,11 +285,31 @@ def score_speaker(
             spans=win.get("spans"),
             speech_s=float(win["speech_s"]),
         )
+    windows = _enrich_window_speech_levels(
+        windows,
+        audio=win["audio"],
+        sample_rate=int(win["sample_rate"]),
+        window=window,
+        spans=win.get("spans"),
+    )
+
+    ch_levels = channel_speech_level_stats(
+        win["audio"],
+        int(win["sample_rate"]),
+        win.get("spans"),
+        clip_threshold=CLIP_THRESHOLD,
+    )
 
     diagnostics = {
         "speech_s": win["speech_s"],
         "speech_min": win["speech_min"],
-        "peak_dbfs": win["peak_dbfs"],
+        "peak_dbfs": ch_levels["speech_peak_dbfs"],
+        "speech_rms_dbfs": win.get("speech_rms_dbfs"),
+        "full_scale_samples": ch_levels["full_scale_samples"],
+        "speech_samples": ch_levels["speech_samples"],
+        "full_scale_clipped_sample_ratio": ch_levels[
+            "full_scale_clipped_sample_ratio"
+        ],
         "n_speech_segments": win["n_speech_segments"],
         "sample_rate": win["sample_rate"],
     }
@@ -279,8 +335,13 @@ def score_speaker(
             "scored_speech_seconds",
             scores.get("n_windows", scores["n_hops"]) * 9.01,
         ),
-        "speech_peak_dbfs": win["peak_dbfs"],
+        "speech_peak_dbfs": ch_levels["speech_peak_dbfs"],
         "speech_rms_dbfs": win.get("speech_rms_dbfs"),
+        "full_scale_samples": ch_levels["full_scale_samples"],
+        "speech_samples": ch_levels["speech_samples"],
+        "full_scale_clipped_sample_ratio": ch_levels[
+            "full_scale_clipped_sample_ratio"
+        ],
         "pass": scores["pass"],
         "threshold_sig": scores["threshold_sig"],
         "personalized": scores["personalized"],

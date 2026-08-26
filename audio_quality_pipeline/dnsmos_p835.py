@@ -157,9 +157,7 @@ def _window_record(
         "ovrl_raw": round(scores["ovrl_raw"], 6),
     }
     if speech_weight_sec is not None:
-        wt = round(speech_weight_sec, 6)
-        row["speech_weight_sec"] = wt
-        row["speech_in_window_sec"] = wt
+        row["speech_weight_sec"] = round(speech_weight_sec, 6)
     return row
 
 

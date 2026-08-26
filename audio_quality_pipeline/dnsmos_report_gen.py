@@ -39,6 +39,11 @@ COLUMNS = (
     "ovrl_raw",
     "speech_weight_sec",
     "speech_in_window_sec",
+    "speech_peak",
+    "full_scale_samples",
+    "speech_samples",
+    "channel_full_scale_samples",
+    "channel_full_scale_clipped_sample_ratio",
     "channel_sig",
     "channel_bak",
     "channel_ovrl",
@@ -67,6 +72,10 @@ def _channel_fields(dnsmos: dict) -> dict:
         "scored_speech_seconds": dnsmos.get("scored_speech_seconds"),
         "speech_peak_dbfs": dnsmos.get("speech_peak_dbfs"),
         "speech_rms_dbfs": dnsmos.get("speech_rms_dbfs"),
+        "channel_full_scale_samples": dnsmos.get("full_scale_samples"),
+        "channel_full_scale_clipped_sample_ratio": dnsmos.get(
+            "full_scale_clipped_sample_ratio"
+        ),
         "dnsmos_pass": dnsmos.get("pass"),
     }
 
@@ -138,6 +147,9 @@ def collect_window_rows(session_dirs: list[Path]) -> tuple[list[dict], int, int]
                     "ovrl_raw": window.get("ovrl_raw"),
                     "speech_weight_sec": window.get("speech_weight_sec"),
                     "speech_in_window_sec": window.get("speech_in_window_sec"),
+                    "speech_peak": window.get("speech_peak"),
+                    "full_scale_samples": window.get("full_scale_samples"),
+                    "speech_samples": window.get("speech_samples"),
                     **channel,
                 })
 
