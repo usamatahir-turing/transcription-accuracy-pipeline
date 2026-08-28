@@ -315,7 +315,13 @@ python run_pipeline.py --batch delivery_batch_06302026
 
 # Excel report (manual)
 python generate_report.py --batch delivery_batch_06302026
+
+# Batch-style numeric JSON/CSV export (reads existing pipeline JSON; no re-scoring)
+python export_numeric_results.py --batch delivery_batch_06302026
 ```
+
+Output lands in ``numerical_results/audio_numerical_results_<batch>/`` (DNSMOS JSONL shards,
+consolidated JSON, channel and session CSVs).
 
 Or step-by-step:
 
