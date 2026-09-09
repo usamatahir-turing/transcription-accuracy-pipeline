@@ -1,0 +1,1231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Failing Segments Review</title>
+  <style>
+    :root {
+      --bg: #e5e7e2;
+      --paper: #fbfcf9;
+      --paper-2: #f1f3ef;
+      --ink: #191d1a;
+      --muted: #626b66;
+      --line: #c8cec8;
+      --line-soft: #dde1dc;
+      --teal: #0d6b74;
+      --teal-dark: #084f56;
+      --teal-soft: #e5f1f0;
+      --red: #ac3d32;
+      --amber: #9a6a0a;
+      --green: #237449;
+      --shadow: 0 14px 40px rgba(35, 45, 39, .08);
+      --mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(115deg, rgba(255,255,255,.28), transparent 36%),
+        var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      min-height: 100vh;
+    }
+    button, input, select { font: inherit; }
+    button { touch-action: manipulation; }
+    :focus-visible { outline: 3px solid rgba(13, 107, 116, .3); outline-offset: 2px; }
+
+    .shell { max-width: 1480px; margin: 0 auto; padding: 28px; }
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: flex-start;
+      margin-bottom: 20px;
+    }
+    .eyebrow, .section-label {
+      margin: 0 0 7px;
+      color: var(--teal-dark);
+      font: 700 11px/1.2 var(--mono);
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 46px); line-height: 1; letter-spacing: -.04em; }
+    .lede { max-width: 720px; margin: 10px 0 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+    .privacy {
+      flex: 0 0 auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(251, 252, 249, .72);
+      color: var(--muted);
+      font: 600 11px/1 var(--mono);
+      white-space: nowrap;
+    }
+    .privacy::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+
+    .workspace { display: grid; grid-template-columns: 390px minmax(0, 1fr); gap: 18px; align-items: start; }
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+    }
+    .setup { padding: 18px; position: sticky; top: 18px; }
+    .review { min-height: 680px; overflow: hidden; }
+    .panel-title { margin: 0 0 4px; font-size: 18px; letter-spacing: -.02em; }
+    .panel-copy { margin: 0 0 16px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+    .source-card {
+      border-top: 1px solid var(--line-soft);
+      padding: 15px 0;
+    }
+    .source-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .source-head h3 { margin: 0; font-size: 13px; }
+    .step { color: var(--muted); font: 700 10px/1 var(--mono); }
+    .hint { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 6px 0 10px; }
+
+    .file-button, .secondary-button, .primary-button, .icon-button {
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s, transform .15s;
+    }
+    .file-button, .secondary-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      border: 1px solid var(--teal);
+      background: #fff;
+      color: var(--teal-dark);
+      padding: 8px 12px;
+      font: 700 11px/1.2 var(--mono);
+    }
+    .file-button:hover, .secondary-button:hover { background: var(--teal-soft); }
+    .file-button input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
+    .primary-button {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--teal);
+      background: var(--teal);
+      color: #fff;
+      padding: 10px 14px;
+      font: 700 12px/1.2 var(--mono);
+    }
+    .primary-button:hover { background: var(--teal-dark); transform: translateY(-1px); }
+    button:disabled { opacity: .48; cursor: not-allowed; transform: none !important; }
+    .button-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .button-row > * { flex: 1 1 130px; }
+
+    .field { display: block; margin-top: 10px; }
+    .field > span, .toggle-title {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font: 700 10px/1.2 var(--mono);
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    input[type="text"], input[type="number"], select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--ink);
+      padding: 7px 9px;
+      font: 12px/1.25 var(--mono);
+    }
+    input[type="text"]:focus, input[type="number"]:focus, select:focus { border-color: var(--teal); }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+
+    .toggles { display: grid; gap: 7px; }
+    .toggle { display: flex; gap: 8px; align-items: flex-start; color: var(--ink); font: 12px/1.35 var(--mono); cursor: pointer; }
+    .toggle input { width: 16px; height: 16px; accent-color: var(--teal); margin: 0; }
+    .toggle small { color: var(--muted); }
+
+    .load-status {
+      margin-top: 9px;
+      min-height: 34px;
+      border: 1px dashed var(--line);
+      border-radius: 5px;
+      padding: 8px 10px;
+      background: var(--paper-2);
+      color: var(--muted);
+      font: 11px/1.45 var(--mono);
+    }
+    .load-status.ready { border-style: solid; border-color: #a8c5b3; color: var(--green); background: #edf6ef; }
+    .load-status.error { border-style: solid; border-color: #d7aaa5; color: var(--red); background: #fbefed; }
+    .delivery-list { display: grid; gap: 6px; margin-top: 8px; }
+    .delivery-item {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid var(--line-soft);
+      border-radius: 5px;
+      background: #fff;
+      padding: 7px 8px;
+    }
+    .delivery-item b, .delivery-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .delivery-item b { font: 700 11px/1.4 var(--mono); }
+    .delivery-item small { color: var(--muted); font: 10px/1.4 var(--mono); }
+    .remove-button { border: 0; background: transparent; color: var(--red); cursor: pointer; font: 700 16px/1 var(--sans); padding: 5px 7px; }
+
+    .run-status { min-height: 20px; margin: 9px 0 0; color: var(--muted); font: 11px/1.45 var(--mono); }
+    .run-status.ok { color: var(--green); }
+    .run-status.error { color: var(--red); }
+    progress { width: 100%; height: 5px; margin: 8px 0 0; accent-color: var(--teal); display: none; }
+    progress.visible { display: block; }
+
+    .review-top { padding: 18px 18px 14px; border-bottom: 1px solid var(--line); }
+    .review-heading { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+    .review-heading h2 { margin: 0; font-size: 18px; }
+    .review-heading p { margin: 4px 0 0; color: var(--muted); font: 11px/1.4 var(--mono); }
+    .export-buttons { display: flex; gap: 7px; }
+    .export-buttons button { min-height: 32px; padding: 6px 9px; }
+
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 8px; margin-top: 14px; }
+    .stat { border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px; background: var(--paper-2); }
+    .stat span { display: block; color: var(--muted); font: 700 9px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+    .stat b { display: block; margin-top: 4px; font: 700 22px/1 var(--mono); }
+
+    .player-dock { display: none; grid-template-columns: minmax(0, 1fr) minmax(240px, 480px); gap: 18px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--teal-soft); }
+    .player-dock.visible { display: grid; }
+    .now-playing { min-width: 0; }
+    .now-playing span { display: block; color: var(--teal-dark); font: 700 9px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+    .now-playing b { display: block; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 12px/1.3 var(--mono); }
+    audio { width: 100%; height: 36px; }
+
+    .filters { display: grid; grid-template-columns: 135px 115px 125px 125px minmax(160px,1fr) 100px 135px; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: #f7f8f5; }
+    .filters input, .filters select { min-height: 32px; }
+
+    .table-wrap { overflow: auto; max-height: 62vh; min-height: 390px; }
+    table { border-collapse: collapse; width: 100%; min-width: 1150px; font: 11px/1.4 var(--mono); }
+    th, td { border-bottom: 1px solid var(--line-soft); padding: 7px 9px; text-align: left; vertical-align: middle; white-space: nowrap; }
+    th { position: sticky; top: 0; z-index: 2; background: var(--paper-2); color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
+    tbody tr:hover { background: #f5f8f5; }
+    tbody tr.playing { background: var(--teal-soft); }
+    td.detail { max-width: 340px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+    .play-button {
+      width: 28px;
+      height: 27px;
+      border: 1px solid var(--teal);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--teal);
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .play-button:hover { color: #fff; background: var(--teal); }
+    .play-button.missing { border-color: var(--line); color: var(--muted); }
+    .review-vote { display: inline-flex; gap: 4px; }
+    .vote-button {
+      width: 30px;
+      height: 27px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fff;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      filter: grayscale(1);
+    }
+    .vote-button:hover { border-color: var(--teal); background: var(--teal-soft); filter: none; }
+    .vote-button.active-up { border-color: var(--green); background: #e5f3e9; color: var(--green); filter: none; box-shadow: inset 0 0 0 1px var(--green); }
+    .vote-button.active-down { border-color: var(--red); background: #fae9e6; color: var(--red); filter: none; box-shadow: inset 0 0 0 1px var(--red); }
+    .sev { font-weight: 700; }
+    .sev-very_low, .sev-high { color: var(--red); }
+    .sev-low, .sev-flagged { color: var(--amber); }
+
+    .empty-state { min-height: 475px; display: grid; place-items: center; padding: 40px 24px; text-align: center; }
+    .empty-state[hidden] { display: none; }
+    .empty-mark { width: 62px; height: 62px; margin: 0 auto 18px; border: 1px solid var(--line); border-radius: 50%; display: grid; place-items: center; background: var(--paper-2); color: var(--teal); font: 700 25px/1 var(--mono); }
+    .empty-state h3 { margin: 0; font-size: 20px; }
+    .empty-state p { max-width: 430px; margin: 8px auto 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .results-area[hidden] { display: none; }
+
+    .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 48px; padding: 8px 18px; border-top: 1px solid var(--line); color: var(--muted); font: 11px/1.3 var(--mono); }
+    .pager-buttons { display: flex; gap: 7px; }
+    .pager-buttons button { min-height: 30px; padding: 5px 10px; }
+
+    @media (max-width: 1050px) {
+      .workspace { grid-template-columns: 1fr; }
+      .setup { position: static; }
+      .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 700px) {
+      .shell { padding: 16px; }
+      .masthead { display: block; }
+      .privacy { display: inline-flex; margin-top: 14px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      .review-heading { display: block; }
+      .export-buttons { margin-top: 12px; }
+      .player-dock { grid-template-columns: 1fr; gap: 8px; }
+      .filters { grid-template-columns: 1fr 1fr; }
+      .field-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">Delivery validation gate</p>
+        <h1>Failing Segments Review</h1>
+        <p class="lede">Build a timestamped listening queue from low DNSMOS SIG windows and high peak dBFS (near-clipping) windows. Select a row to hear only that 9.01&nbsp;s span with a small amount of context.</p>
+      </div>
+      <div class="privacy">Local processing only</div>
+    </header>
+
+    <div class="workspace">
+      <aside class="panel setup" aria-labelledby="setupTitle">
+        <p class="section-label">Review setup</p>
+        <h2 class="panel-title" id="setupTitle">Load the source folders</h2>
+        <p class="panel-copy">This standalone file reads the same exports as the pipeline. Files stay in your browser and are never uploaded.</p>
+
+        <section class="source-card">
+          <div class="source-head"><h3>Numeric results</h3><span class="step">01</span></div>
+          <p class="hint">Choose the folder that contains <code>dnsmos/individual</code> and, optionally, <code>dnsmos/mixed</code>.</p>
+          <label class="file-button">Choose results folder<input id="resultsInput" type="file" webkitdirectory directory multiple></label>
+          <div class="load-status" id="resultsStatus">No numeric-results folder selected.</div>
+        </section>
+
+        <section class="source-card">
+          <div class="source-head"><h3>Delivery audio + seglists</h3><span class="step">02</span></div>
+          <p class="hint">Add each delivery separately. Its tag must match the numeric-results batch tag (for example, <code>rework_08282026</code> or <code>Batch8</code>).</p>
+          <label class="field">
+            <span>Delivery tag</span>
+            <input id="deliveryTag" type="text" list="batchTags" placeholder="rework_08282026" autocomplete="off">
+            <datalist id="batchTags"></datalist>
+          </label>
+          <label class="file-button" style="margin-top:8px">Add delivery folder<input id="deliveryInput" type="file" webkitdirectory directory multiple></label>
+          <div class="delivery-list" id="deliveryList"></div>
+          <div class="load-status" id="deliveryStatus">Required for playback. Numeric results alone are enough to build the queue.</div>
+        </section>
+
+        <section class="source-card">
+          <div class="source-head"><h3>Failure criteria</h3><span class="step">03</span></div>
+          <div class="toggles" style="margin-top:10px">
+            <label class="toggle"><input id="wantSig" type="checkbox" checked><span>DNSMOS SIG <small>flag when below threshold</small></span></label>
+            <label class="toggle"><input id="wantPeak" type="checkbox" checked><span>Peak dBFS <small>flag when at or above threshold</small></span></label>
+            <label class="toggle"><input id="includeMixed" type="checkbox"><span>Include mixed recordings</span></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>SIG threshold</span><input id="sigThreshold" type="number" value="3.0" min="1" max="5" step="0.1"></label>
+            <label class="field"><span>Peak dBFS threshold</span><input id="peakThreshold" type="number" value="0" min="-60" max="0" step="0.1"></label>
+          </div>
+          <label class="field"><span>Playback padding (seconds)</span><input id="playbackPadding" type="number" value="0.35" min="0" max="10" step="0.05"></label>
+        </section>
+
+        <button class="primary-button" id="extractButton">Extract failing segments</button>
+        <progress id="progress" max="100" value="0"></progress>
+        <p class="run-status" id="runStatus" aria-live="polite">Ready when your source files are loaded.</p>
+
+        <div class="button-row" style="margin-top:10px">
+          <label class="file-button">Open queue JSON<input id="queueInput" type="file" accept=".json,application/json"></label>
+          <button class="secondary-button" id="clearButton" type="button">Clear review</button>
+        </div>
+
+      </aside>
+
+      <section class="panel review" aria-labelledby="reviewTitle">
+        <div class="review-top">
+          <div class="review-heading">
+            <div>
+              <h2 id="reviewTitle">Listening queue</h2>
+              <p id="countLine">No review loaded.</p>
+            </div>
+            <div class="export-buttons">
+              <button class="secondary-button" id="exportJson" disabled>Export JSON</button>
+              <button class="secondary-button" id="exportCsv" disabled>Export CSV</button>
+            </div>
+          </div>
+          <div class="summary" id="summary" aria-label="Queue summary">
+            <div class="stat"><span>Total segments</span><b id="statTotal">0</b></div>
+            <div class="stat"><span>Low SIG</span><b id="statSig">0</b></div>
+            <div class="stat"><span>High peak dBFS</span><b id="statPeak">0</b></div>
+            <div class="stat"><span>Reviewed</span><b id="statReviewed">0</b></div>
+          </div>
+        </div>
+
+        <div class="player-dock" id="playerDock">
+          <div class="now-playing"><span>Now reviewing</span><b id="nowPlaying">—</b></div>
+          <audio id="player" controls preload="metadata"></audio>
+        </div>
+
+        <div class="empty-state" id="emptyState">
+          <div>
+            <div class="empty-mark">▶</div>
+            <h3>Your review queue will appear here</h3>
+            <p>Load source folders and extract the timestamped failures, or open a previously exported queue JSON.</p>
+          </div>
+        </div>
+
+        <div class="results-area" id="resultsArea" hidden>
+          <div class="filters">
+            <select id="filterKpi" aria-label="Filter by KPI">
+              <option value="">All KPIs</option>
+              <option value="dnsmos_sig">DNSMOS SIG</option>
+              <option value="peak_dbfs">Peak dBFS</option>
+            </select>
+            <select id="filterSeverity" aria-label="Filter by severity">
+              <option value="">All severity</option>
+              <option value="very_low">Very low</option>
+              <option value="high">High</option>
+              <option value="low">Low</option>
+              <option value="flagged">Flagged</option>
+            </select>
+            <select id="filterBatch" aria-label="Filter by batch"><option value="">All batches</option></select>
+            <select id="filterReview" aria-label="Filter by review verdict">
+              <option value="">All review states</option>
+              <option value="unreviewed">Unreviewed</option>
+              <option value="confirmed">Confirmed 👍</option>
+              <option value="dismissed">Dismissed 👎</option>
+            </select>
+            <input id="filterSearch" type="text" placeholder="Session or channel" aria-label="Filter by session or channel">
+            <input id="filterDuration" type="number" min="0" step="0.1" placeholder="Min duration" aria-label="Minimum duration in seconds">
+            <select id="filterSort" aria-label="Sort queue">
+              <option value="time">Sort: time</option>
+              <option value="duration">Sort: duration</option>
+              <option value="severity">Sort: severity</option>
+            </select>
+          </div>
+          <div class="table-wrap" id="tableWrap">
+            <table>
+              <thead><tr><th>Listen</th><th>Review</th><th>Batch</th><th>Session</th><th>Channel</th><th>KPI</th><th>Start–end</th><th>Duration</th><th>Value</th><th>Severity</th><th>Detail</th></tr></thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <span id="pageLine">0 results</span>
+            <div class="pager-buttons">
+              <button class="secondary-button" id="prevPage">Previous</button>
+              <button class="secondary-button" id="nextPage">Next</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var PAGE_SIZE = 200;
+    var AUDIO_READ_TIMEOUT_MS = 20000;
+    var MEDIA_READY_TIMEOUT_MS = 12000;
+    var CLIP_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+    var CLIP_CACHE_MAX_ITEMS = 48;
+    var FIELDS = ["batch", "session", "channel", "audio_type", "iso", "language", "kpi", "start_sec", "end_sec", "duration_sec", "value", "threshold", "severity", "detail", "review_verdict"];
+    var LANG_NAMES = {AR:"Arabic", DE:"German", GR:"German", EN:"English", ES:"Spanish", FR:"French", IT:"Italian", JA:"Japanese", KO:"Korean", PT:"Portuguese", RU:"Russian"};
+    var SEVERITY_RANK = {very_low:0, high:0, low:1, flagged:1};
+
+    var state = {
+      numericFiles: [],
+      numericRoot: "",
+      deliveries: [],
+      rows: [],
+      filtered: [],
+      audioIndex: new Map(),
+      audioByChannel: new Map(),
+      objectUrls: new Map(),
+      clipUrls: new Map(),
+      clipCacheBytes: 0,
+      wavLayouts: new WeakMap(),
+      fileIds: new WeakMap(),
+      fileIdCounter: 0,
+      activeReaders: new Set(),
+      playRequest: 0,
+      page: 0,
+      playingKey: "",
+      clipEnd: null,
+      deliveryCounter: 0
+    };
+
+    function $(id) { return document.getElementById(id); }
+    function filePath(file) { return String(file.webkitRelativePath || file.name || "").replace(/\\/g, "/"); }
+    function rootName(files) { var p = files.length ? filePath(files[0]).split("/") : []; return p.length > 1 ? p[0] : "selected files"; }
+    function round(value, digits) { if (value == null || value === "") return null; var n = Number(value); if (!Number.isFinite(n)) return null; var m = Math.pow(10, digits == null ? 3 : digits); return Math.round(n * m) / m; }
+    function canonLang(code) { code = String(code || "").toUpperCase(); return ({DE:"GR", GE:"GR", JP:"JA", KR:"KO", RUS:"RU"})[code] || code; }
+    function sessionLang(session) { var m = /^NV-([A-Z]{2,3})-/.exec(session || ""); return m ? canonLang(m[1]) : ""; }
+    function languageName(iso) { return LANG_NAMES[String(iso || "").toUpperCase()] || String(iso || ""); }
+    function basename(path) { var parts = String(path || "").split("/"); return parts[parts.length - 1] || ""; }
+    function parentName(path) { var parts = String(path || "").split("/"); return parts.length > 1 ? parts[parts.length - 2] : ""; }
+    function sessionFromPath(path) {
+      var parts = String(path || "").split("/");
+      for (var i = parts.length - 2; i >= 0; i--) if (/^NV-[A-Z]{2,3}-/i.test(parts[i])) return parts[i];
+      return parentName(path);
+    }
+    function naturalCompare(a, b) { return String(a).localeCompare(String(b), undefined, {numeric:true, sensitivity:"variant"}); }
+    function lexicalCompare(a, b) { a = String(a); b = String(b); return a < b ? -1 : a > b ? 1 : 0; }
+    function normalizedTag(tag) { return String(tag || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+    function channelIdFromBasename(base) {
+      var value = String(base || "");
+      var at = value.indexOf("@");
+      return at > 0 ? value.slice(0, at) : value;
+    }
+    function inferTagFromNumericRoot(root) {
+      var m = /^audio_numerical_results_(.+)$/i.exec(String(root || ""));
+      return m ? m[1] : String(root || "");
+    }
+    function canonicalDeliveryTag(tag) {
+      var value = String(tag || "").trim();
+      var wanted = normalizedTag(value);
+      var available = new Set();
+      state.numericFiles.forEach(function (file) { var meta = detectNumericMeta(filePath(file)); if (meta) available.add(meta.tag); });
+      var matched = Array.from(available).find(function (candidate) { return normalizedTag(candidate) === wanted; });
+      if (matched) return matched;
+      var batch = /^batch[\s_-]*0*(\d+)$/i.exec(value);
+      return batch ? "Batch" + Number(batch[1]) : value;
+    }
+    function nextPaint() { return new Promise(function (resolve) { requestAnimationFrame(function () { resolve(); }); }); }
+
+    function fileIdentity(file) {
+      if (!state.fileIds.has(file)) state.fileIds.set(file, ++state.fileIdCounter);
+      return state.fileIds.get(file);
+    }
+
+    function abortAudioReads() {
+      state.activeReaders.forEach(function (reader) {
+        try { reader.abort(); } catch (e) { /* the read may already be complete */ }
+      });
+      state.activeReaders.clear();
+    }
+
+    function withTimeout(promise, timeoutMs, message) {
+      return new Promise(function (resolve, reject) {
+        var settled = false;
+        var timer = setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          reject(new Error(message));
+        }, timeoutMs);
+        promise.then(function (value) {
+          if (settled) return;
+          settled = true; clearTimeout(timer); resolve(value);
+        }, function (error) {
+          if (settled) return;
+          settled = true; clearTimeout(timer); reject(error);
+        });
+      });
+    }
+
+    function readBlobArrayBuffer(blob, label) {
+      if (typeof FileReader === "undefined") {
+        return withTimeout(blob.arrayBuffer(), AUDIO_READ_TIMEOUT_MS, label + " timed out.");
+      }
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        var timer = setTimeout(function () {
+          try { reader.abort(); } catch (e) { /* ignore */ }
+          reject(new Error(label + " timed out."));
+        }, AUDIO_READ_TIMEOUT_MS);
+        state.activeReaders.add(reader);
+        function finish() { clearTimeout(timer); state.activeReaders.delete(reader); }
+        reader.onload = function () { finish(); resolve(reader.result); };
+        reader.onerror = function () { finish(); reject(reader.error || new Error(label + " failed.")); };
+        reader.onabort = function () { finish(); reject(new DOMException("Audio read cancelled.", "AbortError")); };
+        reader.readAsArrayBuffer(blob);
+      });
+    }
+
+    function readFileRange(file, start, end, label) {
+      return readBlobArrayBuffer(file.slice(start, end), label);
+    }
+
+    function fourCC(bytes, offset) {
+      return String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+    }
+
+    function writeFourCC(bytes, offset, text) {
+      for (var i = 0; i < 4; i++) bytes[offset + i] = text.charCodeAt(i);
+    }
+
+    function setStatus(message, kind) {
+      var el = $("runStatus");
+      el.textContent = message;
+      el.className = "run-status" + (kind ? " " + kind : "");
+    }
+
+    function setProgress(value, visible) {
+      var el = $("progress");
+      el.value = Math.max(0, Math.min(100, value || 0));
+      el.classList.toggle("visible", !!visible);
+    }
+
+    function setLoadStatus(id, message, kind) {
+      var el = $(id);
+      el.textContent = message;
+      el.className = "load-status" + (kind ? " " + kind : "");
+    }
+
+    function detectNumericMeta(path) {
+      var p = "/" + String(path || "").toLowerCase();
+      if (!/\.jsonl$/i.test(path)) return null;
+      var nested = /\/dnsmos\/(individual|mixed)\/([^/]+)\/.+\.jsonl$/i.exec(p);
+      if (nested) {
+        var batchDir = nested[2];
+        var tag = /batch\s*8/i.test(batchDir) ? "Batch8" : /batch\s*9/i.test(batchDir) ? "Batch9" : batchDir;
+        return {kind:nested[1], batchDir:batchDir, tag:tag};
+      }
+      var flat = /\/dnsmos\/(individual|mixed)\/[^/]+\.jsonl$/i.exec(p);
+      if (flat) {
+        return {kind:flat[1], batchDir:"", tag:inferTagFromNumericRoot(state.numericRoot)};
+      }
+      return null;
+    }
+
+    function refreshBatchSuggestions() {
+      var tags = new Set();
+      state.numericFiles.forEach(function (file) { var m = detectNumericMeta(filePath(file)); if (m) tags.add(m.tag); });
+      state.deliveries.forEach(function (d) { tags.add(d.tag); });
+      var list = $("batchTags");
+      list.textContent = "";
+      Array.from(tags).sort(naturalCompare).forEach(function (tag) { var opt = document.createElement("option"); opt.value = tag; list.appendChild(opt); });
+      if (!$("deliveryTag").value && tags.size === 1) $("deliveryTag").value = Array.from(tags)[0];
+    }
+
+    function makeRow(batch, session, channel, audioType, iso, kpi, start, end, value, threshold, severity, detail) {
+      var st = start == null ? null : Number(start);
+      var en = end == null ? null : Number(end);
+      iso = String(iso || "").toLowerCase();
+      return {
+        batch: String(batch || ""), session: String(session || ""), channel: String(channel || ""),
+        audio_type: String(audioType || ""), iso: iso, language: languageName(iso), kpi: String(kpi || ""),
+        start_sec: round(st, 2), end_sec: round(en, 2), duration_sec: st != null && en != null ? round(en - st, 2) : null,
+        value: value, threshold: threshold, severity: String(severity || ""), detail: String(detail || ""), review_verdict: ""
+      };
+    }
+
+    function indexDelivery(files, tag, id) {
+      var sessions = new Map();
+      files.forEach(function (file) {
+        var path = filePath(file);
+        var name = basename(path);
+        var session = sessionFromPath(path);
+        if (!session || !name) return;
+        var rec = sessions.get(session);
+        if (!rec) { rec = {speakers:new Map(), mixed:null}; sessions.set(session, rec); }
+        var m = /^(.+?)\.seglst\.json$/i.exec(name);
+        if (m) {
+          var channelId = channelIdFromBasename(m[1]);
+          var s1 = rec.speakers.get(channelId) || {name:channelId};
+          s1.seglst = file; rec.speakers.set(channelId, s1); return;
+        }
+        m = /^(.+?)\.rttm$/i.exec(name);
+        if (m) {
+          var channelIdRttm = channelIdFromBasename(m[1]);
+          var s2 = rec.speakers.get(channelIdRttm) || {name:channelIdRttm};
+          s2.rttm = file; rec.speakers.set(channelIdRttm, s2); return;
+        }
+        m = /^(.+?)\.wav$/i.exec(name);
+        if (m) {
+          var base = m[1];
+          var isMixed = /(?:^|[._-])(?:mix|mixed|combined)(?:$|[._-])/i.test(base);
+          if (isMixed) { rec.mixed = file; return; }
+          var channelIdWav = channelIdFromBasename(base);
+          var s3 = rec.speakers.get(channelIdWav) || {name:channelIdWav};
+          s3.wav = file; rec.speakers.set(channelIdWav, s3);
+        }
+      });
+      return {id:id, tag:tag, root:rootName(files), files:files, sessions:sessions};
+    }
+
+    function rebuildAudioIndex() {
+      state.audioIndex.clear();
+      state.audioByChannel.clear();
+      function register(tag, session, channel, file) {
+        state.audioIndex.set(tag + "/" + session + "/" + channel, file);
+        var fallbackKey = String(session).toLowerCase() + "/" + String(channel).toUpperCase();
+        var candidates = state.audioByChannel.get(fallbackKey) || [];
+        if (!candidates.some(function (candidate) { return candidate.file === file; })) candidates.push({tag:tag, file:file});
+        state.audioByChannel.set(fallbackKey, candidates);
+      }
+      state.deliveries.forEach(function (delivery) {
+        delivery.sessions.forEach(function (rec, session) {
+          rec.speakers.forEach(function (source, channelId) {
+            if (source.wav) register(delivery.tag, session, channelId, source.wav);
+          });
+          if (rec.mixed) register(delivery.tag, session, "MIXED", rec.mixed);
+        });
+      });
+    }
+
+    function resolveAudio(row) {
+      var exactKey = audioKey(row);
+      var exact = state.audioIndex.get(exactKey);
+      if (exact) return {file:exact, key:exactKey, match:"exact", candidates:[]};
+      var fallbackKey = String(row.session || "").toLowerCase() + "/" + String(row.channel || "");
+      var candidates = state.audioByChannel.get(fallbackKey) || [];
+      var tagMatches = candidates.filter(function (candidate) { return normalizedTag(candidate.tag) === normalizedTag(row.batch); });
+      if (tagMatches.length === 1) return {file:tagMatches[0].file, key:exactKey, match:"normalized-tag", candidates:candidates};
+      if (candidates.length === 1) return {file:candidates[0].file, key:exactKey, match:"unique-session-channel", candidates:candidates};
+      return {file:null, key:exactKey, match:"none", candidates:candidates};
+    }
+
+    function missingAudioMessage(row, match) {
+      if (match.candidates.length > 1) {
+        return "More than one loaded audio file matches " + row.session + "/" + row.channel + ". Use the delivery tag " + row.batch + " to disambiguate it.";
+      }
+      var sessionPrefix = String(row.session || "").toLowerCase() + "/";
+      var channels = Array.from(state.audioByChannel.keys()).filter(function (key) { return key.indexOf(sessionPrefix) === 0; }).map(function (key) { return key.slice(sessionPrefix.length); });
+      if (channels.length) return "The session audio is loaded, but " + row.channel + " was not indexed. Available channels: " + channels.join(", ") + ".";
+      var tags = Array.from(new Set(state.deliveries.map(function (delivery) { return delivery.tag; }))).join(", ");
+      return "The loaded delivery folders do not contain WAV audio for " + row.session + "." + (tags ? " Loaded tags: " + tags + "." : "");
+    }
+
+    function renderDeliveryList() {
+      var host = $("deliveryList");
+      host.textContent = "";
+      state.deliveries.forEach(function (delivery) {
+        var channels = 0;
+        delivery.sessions.forEach(function (rec) { channels += rec.speakers.size; });
+        var item = document.createElement("div"); item.className = "delivery-item";
+        var text = document.createElement("div");
+        var title = document.createElement("b"); title.textContent = delivery.tag + " · " + delivery.root;
+        var meta = document.createElement("small"); meta.textContent = delivery.sessions.size + " sessions · " + channels + " channels";
+        text.append(title, meta);
+        var remove = document.createElement("button"); remove.type = "button"; remove.className = "remove-button"; remove.textContent = "×"; remove.title = "Remove " + delivery.tag;
+        remove.addEventListener("click", function () {
+          state.deliveries = state.deliveries.filter(function (d) { return d.id !== delivery.id; });
+          rebuildAudioIndex(); renderDeliveryList(); refreshBatchSuggestions(); renderRows();
+        });
+        item.append(text, remove); host.appendChild(item);
+      });
+      if (state.deliveries.length) {
+        setLoadStatus("deliveryStatus", state.deliveries.length + " delivery folder" + (state.deliveries.length === 1 ? "" : "s") + " loaded · " + state.audioIndex.size + " playable channels.", "ready");
+      } else {
+        setLoadStatus("deliveryStatus", "Optional for playback. Numeric results alone are enough to build the queue.", "");
+      }
+    }
+
+    async function extractDnsmos(rows, wants) {
+      var files = state.numericFiles.filter(function (file) {
+        var meta = detectNumericMeta(filePath(file));
+        return meta && (meta.kind === "individual" || wants.includeMixed);
+      });
+      var malformed = 0;
+      for (var fi = 0; fi < files.length; fi++) {
+        var file = files[fi];
+        var meta = detectNumericMeta(filePath(file));
+        var lines = (await file.text()).split(/\r?\n/);
+        for (var li = 0; li < lines.length; li++) {
+          if (!lines[li].trim()) continue;
+          var rec;
+          try { rec = JSON.parse(lines[li]); } catch (e) { malformed++; continue; }
+          var session = rec.session_id || "";
+          var iso = rec.lang || sessionLang(session);
+          (Array.isArray(rec.channels) ? rec.channels : []).forEach(function (channel) {
+            var chan = channel.speaker || "";
+            (Array.isArray(channel.windows) ? channel.windows : []).forEach(function (window) {
+              var sig = window.sig;
+              if (wants.sig && sig != null && Number(sig) < wants.sigThreshold) {
+                rows.push(makeRow(meta.tag, session, chan, meta.kind, iso, "dnsmos_sig", window.start_sec, window.end_sec,
+                  round(sig, 3), wants.sigThreshold, Number(sig) < 2.5 ? "very_low" : "low",
+                  "bak=" + round(window.bak, 3) + ";ovrl=" + round(window.ovrl, 3)));
+              }
+              var fs = Number(window.full_scale_samples || 0);
+              var peak = Number(window.speech_peak || 0);
+              var peakDb = peak > 0 ? round(20 * Math.log10(peak), 2) : null;
+              if (wants.peak && peakDb != null && peakDb >= wants.peakThreshold) {
+                rows.push(makeRow(meta.tag, session, chan, meta.kind, iso, "peak_dbfs", window.start_sec, window.end_sec,
+                  peakDb, wants.peakThreshold, peakDb >= 0 ? "high" : "low",
+                  "speech_peak=" + round(peak, 6) + ";full_scale_samples=" + fs));
+              }
+            });
+          });
+        }
+        setProgress(files.length ? ((fi + 1) / files.length) * 72 : 72, true);
+        if (fi % 3 === 0) { setStatus("Reading DNSMOS files " + (fi + 1) + " of " + files.length + "…"); await nextPaint(); }
+      }
+      return malformed;
+    }
+
+    function compareTime(a, b) {
+      return lexicalCompare(a.batch, b.batch) || lexicalCompare(a.session, b.session) || lexicalCompare(a.channel, b.channel) || lexicalCompare(a.kpi, b.kpi) || (Number(a.start_sec || 0) - Number(b.start_sec || 0));
+    }
+
+    async function extract() {
+      var wants = {
+        sig: $("wantSig").checked,
+        peak: $("wantPeak").checked,
+        includeMixed: $("includeMixed").checked,
+        sigThreshold: Number($("sigThreshold").value || 3),
+        peakThreshold: Number($("peakThreshold").value || 0)
+      };
+      if (!wants.sig && !wants.peak) { setStatus("Select at least one failure criterion.", "error"); return; }
+      if (!state.numericFiles.length) { setStatus("Choose the numeric-results folder first.", "error"); return; }
+      var numericMatches = state.numericFiles.filter(function (f) { return !!detectNumericMeta(filePath(f)); });
+      if (!numericMatches.length) { setStatus("No DNSMOS JSONL files were found under dnsmos/individual or dnsmos/mixed.", "error"); return; }
+
+      $("extractButton").disabled = true;
+      setProgress(1, true);
+      setStatus("Preparing the review queue…");
+      var rows = [];
+      var malformed = 0;
+      try {
+        malformed += await extractDnsmos(rows, wants);
+        rows.sort(compareTime);
+        state.rows = rows;
+        state.page = 0;
+        setProgress(100, true);
+        updateReview();
+        setStatus("Extracted " + rows.length.toLocaleString() + " failing segments" + (malformed ? " · skipped " + malformed + " unreadable source file" + (malformed === 1 ? "" : "s") : "") + ".", "ok");
+      } catch (error) {
+        console.error(error);
+        setStatus("Extraction stopped: " + (error && error.message ? error.message : String(error)), "error");
+      } finally {
+        $("extractButton").disabled = false;
+        setTimeout(function () { setProgress(0, false); }, 450);
+      }
+    }
+
+    function normalizeImportedRow(row) {
+      var out = {};
+      FIELDS.forEach(function (field) { out[field] = row[field] == null ? "" : row[field]; });
+      out.start_sec = row.start_sec == null ? null : Number(row.start_sec);
+      out.end_sec = row.end_sec == null ? null : Number(row.end_sec);
+      out.duration_sec = row.duration_sec == null ? (out.start_sec != null && out.end_sec != null ? round(out.end_sec - out.start_sec, 2) : null) : Number(row.duration_sec);
+      out.batch = String(row.batch || ""); out.session = String(row.session || ""); out.channel = String(row.channel || "");
+      out.kpi = String(row.kpi || ""); out.severity = String(row.severity || ""); out.detail = String(row.detail || "");
+      out.review_verdict = row.review_verdict === "confirmed" || row.review_verdict === "dismissed" ? row.review_verdict : "";
+      return out;
+    }
+
+    async function openQueue(file) {
+      if (!file) return;
+      try {
+        var data = JSON.parse(await file.text());
+        if (!Array.isArray(data)) throw new Error("Queue JSON must contain an array of rows.");
+        state.rows = data.map(normalizeImportedRow).sort(compareTime);
+        state.page = 0;
+        updateReview();
+        setStatus("Opened " + state.rows.length.toLocaleString() + " failing segments from " + file.name + ".", "ok");
+      } catch (error) {
+        setStatus("Could not open queue: " + (error.message || String(error)), "error");
+      }
+    }
+
+    function updateBatchFilter() {
+      var el = $("filterBatch");
+      var selected = el.value;
+      var batches = Array.from(new Set(state.rows.map(function (r) { return r.batch; }).filter(Boolean))).sort(naturalCompare);
+      el.textContent = "";
+      var all = document.createElement("option"); all.value = ""; all.textContent = "All batches"; el.appendChild(all);
+      batches.forEach(function (batch) { var opt = document.createElement("option"); opt.value = batch; opt.textContent = batch; el.appendChild(opt); });
+      if (batches.indexOf(selected) >= 0) el.value = selected;
+    }
+
+    function updateSummary() {
+      var counts = {dnsmos_sig:0, peak_dbfs:0};
+      state.rows.forEach(function (row) { if (Object.prototype.hasOwnProperty.call(counts, row.kpi)) counts[row.kpi]++; });
+      $("statTotal").textContent = state.rows.length.toLocaleString();
+      $("statSig").textContent = counts.dnsmos_sig.toLocaleString();
+      $("statPeak").textContent = counts.peak_dbfs.toLocaleString();
+      $("statReviewed").textContent = state.rows.filter(function (row) { return row.review_verdict === "confirmed" || row.review_verdict === "dismissed"; }).length.toLocaleString();
+      $("exportJson").disabled = !state.rows.length;
+      $("exportCsv").disabled = !state.rows.length;
+    }
+
+    function applyFilters() {
+      var kpi = $("filterKpi").value;
+      var severity = $("filterSeverity").value;
+      var batch = $("filterBatch").value;
+      var review = $("filterReview").value;
+      var search = $("filterSearch").value.trim().toLowerCase();
+      var minDuration = Number($("filterDuration").value || 0);
+      var sort = $("filterSort").value;
+      var rows = state.rows.filter(function (row) {
+        if (kpi && row.kpi !== kpi) return false;
+        if (severity && row.severity !== severity) return false;
+        if (batch && row.batch !== batch) return false;
+        if (review === "unreviewed" && row.review_verdict) return false;
+        if (review === "confirmed" && row.review_verdict !== "confirmed") return false;
+        if (review === "dismissed" && row.review_verdict !== "dismissed") return false;
+        if (search && (String(row.session) + "/" + String(row.channel)).toLowerCase().indexOf(search) < 0) return false;
+        if (Number(row.duration_sec || 0) < minDuration) return false;
+        return true;
+      });
+      if (sort === "duration") rows.sort(function (a, b) { return Number(b.duration_sec || 0) - Number(a.duration_sec || 0) || compareTime(a, b); });
+      else if (sort === "severity") rows.sort(function (a, b) { return (SEVERITY_RANK[a.severity] == null ? 2 : SEVERITY_RANK[a.severity]) - (SEVERITY_RANK[b.severity] == null ? 2 : SEVERITY_RANK[b.severity]) || compareTime(a, b); });
+      else rows.sort(compareTime);
+      state.filtered = rows;
+      var pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+      state.page = Math.min(state.page, pages - 1);
+    }
+
+    function cell(text, className, title) {
+      var td = document.createElement("td"); td.textContent = text == null ? "" : String(text);
+      if (className) td.className = className;
+      if (title) td.title = title;
+      return td;
+    }
+
+    function formatValue(value) {
+      if (value == null || value === "") return "";
+      var n = Number(value);
+      if (!Number.isFinite(n)) return String(value);
+      if (Math.abs(n) > 0 && Math.abs(n) < .001) return n.toExponential(3);
+      return String(round(n, 4));
+    }
+
+    function rowKey(row) { return row.batch + "/" + row.session + "/" + row.channel + "/" + row.kpi + "/" + row.start_sec; }
+    function audioKey(row) { return row.batch + "/" + row.session + "/" + row.channel; }
+
+    function setReviewVerdict(row, verdict) {
+      row.review_verdict = row.review_verdict === verdict ? "" : verdict;
+      updateSummary();
+      renderRows();
+    }
+
+    function renderRows() {
+      if (!state.rows.length) return;
+      applyFilters();
+      var start = state.page * PAGE_SIZE;
+      var pageRows = state.filtered.slice(start, start + PAGE_SIZE);
+      var body = $("tableBody"); body.textContent = "";
+      pageRows.forEach(function (row) {
+        var tr = document.createElement("tr"); tr.dataset.key = rowKey(row);
+        if (state.playingKey === tr.dataset.key) tr.classList.add("playing");
+        var playCell = document.createElement("td");
+        var play = document.createElement("button"); play.type = "button"; play.className = "play-button"; play.textContent = "▶";
+        var hasAudio = !!resolveAudio(row).file;
+        if (!hasAudio) play.classList.add("missing");
+        play.title = hasAudio ? "Play this segment" : "Load the matching delivery audio to play";
+        play.setAttribute("aria-label", "Play " + row.session + " " + row.channel + " at " + row.start_sec + " seconds");
+        play.addEventListener("click", function () { playSegment(row); });
+        playCell.appendChild(play); tr.appendChild(playCell);
+        var reviewCell = document.createElement("td");
+        var voteWrap = document.createElement("div"); voteWrap.className = "review-vote";
+        var confirm = document.createElement("button"); confirm.type = "button"; confirm.className = "vote-button" + (row.review_verdict === "confirmed" ? " active-up" : ""); confirm.textContent = "👍";
+        confirm.title = row.review_verdict === "confirmed" ? "Confirmed finding — click again to clear" : "Confirm this finding";
+        confirm.setAttribute("aria-label", "Confirm finding for " + row.session + " " + row.channel);
+        confirm.setAttribute("aria-pressed", row.review_verdict === "confirmed" ? "true" : "false");
+        confirm.addEventListener("click", function () { setReviewVerdict(row, "confirmed"); });
+        var dismiss = document.createElement("button"); dismiss.type = "button"; dismiss.className = "vote-button" + (row.review_verdict === "dismissed" ? " active-down" : ""); dismiss.textContent = "👎";
+        dismiss.title = row.review_verdict === "dismissed" ? "Dismissed finding — click again to clear" : "Dismiss this finding";
+        dismiss.setAttribute("aria-label", "Dismiss finding for " + row.session + " " + row.channel);
+        dismiss.setAttribute("aria-pressed", row.review_verdict === "dismissed" ? "true" : "false");
+        dismiss.addEventListener("click", function () { setReviewVerdict(row, "dismissed"); });
+        voteWrap.append(confirm, dismiss); reviewCell.appendChild(voteWrap); tr.appendChild(reviewCell);
+        tr.appendChild(cell(row.batch)); tr.appendChild(cell(row.session)); tr.appendChild(cell(row.channel)); tr.appendChild(cell(row.kpi));
+        tr.appendChild(cell(row.start_sec + "–" + row.end_sec)); tr.appendChild(cell(row.duration_sec == null ? "" : row.duration_sec + " s"));
+        tr.appendChild(cell(formatValue(row.value)));
+        tr.appendChild(cell(row.severity, "sev sev-" + row.severity));
+        tr.appendChild(cell(row.detail, "detail", row.detail));
+        body.appendChild(tr);
+      });
+      var end = Math.min(start + PAGE_SIZE, state.filtered.length);
+      $("countLine").textContent = state.filtered.length.toLocaleString() + " of " + state.rows.length.toLocaleString() + " segments match the current filters.";
+      $("pageLine").textContent = state.filtered.length ? (start + 1).toLocaleString() + "–" + end.toLocaleString() + " of " + state.filtered.length.toLocaleString() : "0 results";
+      $("prevPage").disabled = state.page <= 0;
+      $("nextPage").disabled = end >= state.filtered.length;
+    }
+
+    function updateReview() {
+      updateSummary();
+      updateBatchFilter();
+      var hasRows = state.rows.length > 0;
+      $("emptyState").hidden = hasRows;
+      $("resultsArea").hidden = !hasRows;
+      if (hasRows) renderRows();
+      else $("countLine").textContent = "No review loaded.";
+    }
+
+    function getObjectUrl(key, file) {
+      var existing = state.objectUrls.get(key);
+      if (existing && existing.file === file) return existing.url;
+      if (existing) URL.revokeObjectURL(existing.url);
+      var url = URL.createObjectURL(file);
+      state.objectUrls.set(key, {file:file, url:url});
+      return url;
+    }
+
+    async function parseWavLayout(file) {
+      var prefixSize = Math.min(file.size, 64 * 1024);
+      var prefixBuffer = await readFileRange(file, 0, prefixSize, "Reading the WAV header");
+      var prefix = new Uint8Array(prefixBuffer);
+      if (prefix.length < 12 || fourCC(prefix, 0) !== "RIFF" || fourCC(prefix, 8) !== "WAVE") {
+        throw new Error("This audio file is not a standard RIFF/WAV file.");
+      }
+
+      async function bytesAt(offset, length, label) {
+        if (offset >= 0 && offset + length <= prefix.length) return prefix.slice(offset, offset + length);
+        return new Uint8Array(await readFileRange(file, offset, offset + length, label));
+      }
+
+      var offset = 12;
+      var fmtBytes = null;
+      var dataOffset = null;
+      var dataSize = null;
+      for (var chunk = 0; chunk < 64 && offset + 8 <= file.size; chunk++) {
+        var header = await bytesAt(offset, 8, "Reading the WAV chunk table");
+        if (header.length < 8) break;
+        var chunkId = fourCC(header, 0);
+        var chunkSize = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(4, true);
+        var payload = offset + 8;
+        if (chunkId === "fmt ") {
+          if (chunkSize < 16 || chunkSize > 65536) throw new Error("The WAV format block is invalid.");
+          fmtBytes = await bytesAt(payload, chunkSize, "Reading the WAV format");
+        } else if (chunkId === "data") {
+          dataOffset = payload;
+          dataSize = Math.min(chunkSize === 0xffffffff ? file.size - payload : chunkSize, file.size - payload);
+          break;
+        }
+        var next = payload + chunkSize + (chunkSize % 2);
+        if (!Number.isSafeInteger(next) || next <= offset || next > file.size) break;
+        offset = next;
+      }
+      if (!fmtBytes || dataOffset == null || dataSize == null) throw new Error("The WAV audio-data range could not be located.");
+
+      var fmt = new DataView(fmtBytes.buffer, fmtBytes.byteOffset, fmtBytes.byteLength);
+      var audioFormat = fmt.getUint16(0, true);
+      var channels = fmt.getUint16(2, true);
+      var sampleRate = fmt.getUint32(4, true);
+      var byteRate = fmt.getUint32(8, true);
+      var blockAlign = fmt.getUint16(12, true);
+      if ([1, 3, 0xfffe].indexOf(audioFormat) < 0 || !channels || !sampleRate || !byteRate || !blockAlign) {
+        throw new Error("This WAV encoding cannot be clipped safely in the browser.");
+      }
+      return {fmtBytes:fmtBytes, dataOffset:dataOffset, dataSize:dataSize, byteRate:byteRate, blockAlign:blockAlign};
+    }
+
+    async function getWavLayout(file) {
+      var cached = state.wavLayouts.get(file);
+      if (cached) return cached;
+      var layout = await parseWavLayout(file);
+      state.wavLayouts.set(file, layout);
+      return layout;
+    }
+
+    function buildWavBlob(fmtBytes, audioBytes) {
+      var fmtPad = fmtBytes.length % 2;
+      var dataPad = audioBytes.length % 2;
+      var total = 12 + 8 + fmtBytes.length + fmtPad + 8 + audioBytes.length + dataPad;
+      var out = new Uint8Array(total);
+      var view = new DataView(out.buffer);
+      writeFourCC(out, 0, "RIFF"); view.setUint32(4, total - 8, true); writeFourCC(out, 8, "WAVE");
+      var offset = 12;
+      writeFourCC(out, offset, "fmt "); view.setUint32(offset + 4, fmtBytes.length, true); out.set(fmtBytes, offset + 8);
+      offset += 8 + fmtBytes.length + fmtPad;
+      writeFourCC(out, offset, "data"); view.setUint32(offset + 4, audioBytes.length, true); out.set(audioBytes, offset + 8);
+      return new Blob([out], {type:"audio/wav"});
+    }
+
+    async function createWavClip(file, startSec, endSec) {
+      var layout = await getWavLayout(file);
+      var duration = layout.dataSize / layout.byteRate;
+      var start = Math.max(0, Math.min(Number(startSec || 0), duration));
+      var end = Math.max(start, Math.min(Number(endSec || start), duration));
+      var byteStart = Math.floor((start * layout.byteRate) / layout.blockAlign) * layout.blockAlign;
+      var byteEnd = Math.ceil((end * layout.byteRate) / layout.blockAlign) * layout.blockAlign;
+      byteStart = Math.max(0, Math.min(byteStart, layout.dataSize));
+      byteEnd = Math.max(byteStart, Math.min(byteEnd, layout.dataSize));
+      if (byteEnd <= byteStart) throw new Error("The selected audio segment is empty.");
+      var audio = new Uint8Array(await readFileRange(file, layout.dataOffset + byteStart, layout.dataOffset + byteEnd, "Buffering the selected audio segment"));
+      return buildWavBlob(layout.fmtBytes, audio);
+    }
+
+    function cacheClip(key, blob) {
+      var url = URL.createObjectURL(blob);
+      state.clipUrls.set(key, {url:url, size:blob.size});
+      state.clipCacheBytes += blob.size;
+      while (state.clipUrls.size > CLIP_CACHE_MAX_ITEMS || state.clipCacheBytes > CLIP_CACHE_MAX_BYTES) {
+        var oldestKey = state.clipUrls.keys().next().value;
+        var oldest = state.clipUrls.get(oldestKey);
+        state.clipUrls.delete(oldestKey);
+        state.clipCacheBytes -= oldest.size;
+        URL.revokeObjectURL(oldest.url);
+      }
+      return url;
+    }
+
+    async function getClipUrl(file, start, end) {
+      var key = fileIdentity(file) + "/" + start.toFixed(3) + "/" + end.toFixed(3);
+      var cached = state.clipUrls.get(key);
+      if (cached) {
+        state.clipUrls.delete(key); state.clipUrls.set(key, cached);
+        return cached.url;
+      }
+      return cacheClip(key, await createWavClip(file, start, end));
+    }
+
+    function waitForMetadata(player) {
+      if (player.readyState >= 1) return Promise.resolve();
+      return new Promise(function (resolve, reject) {
+        var timer = setTimeout(function () { cleanup(); reject(new Error("Audio preparation timed out.")); }, MEDIA_READY_TIMEOUT_MS);
+        function cleanup() { clearTimeout(timer); player.removeEventListener("loadedmetadata", loaded); player.removeEventListener("error", failed); }
+        function loaded() { cleanup(); resolve(); }
+        function failed() { cleanup(); reject(new Error("The browser could not open the prepared audio.")); }
+        player.addEventListener("loadedmetadata", loaded);
+        player.addEventListener("error", failed);
+      });
+    }
+
+    async function startPlayback(player, start, requestId) {
+      await waitForMetadata(player);
+      if (requestId !== state.playRequest) return;
+      try { player.currentTime = start; } catch (e) { /* some media engines seek on the next frame */ }
+      try {
+        await player.play();
+        if (requestId === state.playRequest) setStatus("Playing the buffered segment.", "ok");
+      } catch (error) {
+        if (requestId === state.playRequest) setStatus("The segment is ready. Press play in the audio control to listen.");
+      }
+    }
+
+    async function playDirectStream(player, file, key, start, end, requestId) {
+      if (requestId !== state.playRequest) return;
+      setStatus("Partial buffering is unavailable for this WAV; trying the direct stream…");
+      state.clipEnd = end;
+      player.src = getObjectUrl(key, file);
+      player.load();
+      try { await startPlayback(player, start, requestId); }
+      catch (error) {
+        if (requestId === state.playRequest) setStatus("Google Drive did not respond in time. Try the segment again or choose another row.", "error");
+      }
+    }
+
+    async function playSegment(row) {
+      var match = resolveAudio(row);
+      var key = match.key;
+      var file = match.file;
+      if (!file) {
+        setStatus(missingAudioMessage(row, match), "error");
+        return;
+      }
+      var player = $("player");
+      var padding = Math.max(0, Number($("playbackPadding").value || 0));
+      var start = Math.max(0, Number(row.start_sec || 0) - padding);
+      var end = Number(row.end_sec || start) + padding;
+      var requestId = ++state.playRequest;
+      abortAudioReads();
+      player.pause();
+      state.clipEnd = null;
+      state.playingKey = rowKey(row);
+      $("playerDock").classList.add("visible");
+      $("nowPlaying").textContent = key + " · " + row.kpi + " · " + row.start_sec + "–" + row.end_sec + " s";
+      setStatus("Buffering only the selected segment from the audio source…");
+      renderRows();
+      try {
+        var clipUrl = await getClipUrl(file, start, end);
+        if (requestId !== state.playRequest) return;
+        player.src = clipUrl;
+        player.load();
+        await startPlayback(player, 0, requestId);
+      } catch (error) {
+        if (requestId !== state.playRequest || (error && error.name === "AbortError")) return;
+        await playDirectStream(player, file, key, start, end, requestId);
+      }
+    }
+
+    function csvEscape(value) {
+      var text = value == null ? "" : String(value);
+      return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+    }
+
+    function download(name, content, type) {
+      var blob = new Blob([content], {type:type});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+    }
+
+    function exportJson() { download("failing_segments.json", JSON.stringify(state.rows, null, 1), "application/json;charset=utf-8"); }
+    function exportCsv() {
+      var lines = [FIELDS.join(",")];
+      state.rows.forEach(function (row) { lines.push(FIELDS.map(function (field) { return csvEscape(row[field]); }).join(",")); });
+      download("failing_segments.csv", "\ufeff" + lines.join("\r\n"), "text/csv;charset=utf-8");
+    }
+
+    function clearReview() {
+      state.playRequest++;
+      abortAudioReads();
+      state.rows = []; state.filtered = []; state.page = 0; state.playingKey = ""; state.clipEnd = null;
+      var player = $("player"); player.pause(); player.removeAttribute("src"); player.load();
+      $("playerDock").classList.remove("visible");
+      updateReview();
+      setStatus("Review cleared. Source folders remain loaded.");
+    }
+
+    $("resultsInput").addEventListener("change", function (event) {
+      state.numericFiles = Array.from(event.target.files || []);
+      state.numericRoot = rootName(state.numericFiles);
+      var matches = state.numericFiles.map(function (f) { return detectNumericMeta(filePath(f)); }).filter(Boolean);
+      var individual = matches.filter(function (m) { return m.kind === "individual"; }).length;
+      var mixed = matches.filter(function (m) { return m.kind === "mixed"; }).length;
+      if (matches.length) setLoadStatus("resultsStatus", state.numericRoot + " · " + individual + " individual + " + mixed + " mixed DNSMOS files.", "ready");
+      else setLoadStatus("resultsStatus", "No dnsmos/individual or dnsmos/mixed JSONL files found in this folder.", "error");
+      refreshBatchSuggestions();
+    });
+
+    $("deliveryInput").addEventListener("change", function (event) {
+      var files = Array.from(event.target.files || []);
+      var tag = canonicalDeliveryTag($("deliveryTag").value);
+      if (!files.length) return;
+      if (!tag) {
+        setLoadStatus("deliveryStatus", "Enter the matching delivery tag before choosing the folder.", "error");
+        event.target.value = "";
+        return;
+      }
+      $("deliveryTag").value = tag;
+      var delivery = indexDelivery(files, tag, ++state.deliveryCounter);
+      if (!delivery.sessions.size) {
+        setLoadStatus("deliveryStatus", "No session folders with WAV or seglst files were found.", "error");
+        event.target.value = "";
+        return;
+      }
+      state.deliveries.push(delivery);
+      rebuildAudioIndex(); renderDeliveryList(); refreshBatchSuggestions(); renderRows();
+      event.target.value = "";
+    });
+
+    $("queueInput").addEventListener("change", function (event) { openQueue((event.target.files || [])[0]); event.target.value = ""; });
+    $("extractButton").addEventListener("click", extract);
+    $("clearButton").addEventListener("click", clearReview);
+    $("exportJson").addEventListener("click", exportJson);
+    $("exportCsv").addEventListener("click", exportCsv);
+    $("prevPage").addEventListener("click", function () { if (state.page > 0) { state.page--; renderRows(); $("tableWrap").scrollTop = 0; } });
+    $("nextPage").addEventListener("click", function () { if ((state.page + 1) * PAGE_SIZE < state.filtered.length) { state.page++; renderRows(); $("tableWrap").scrollTop = 0; } });
+
+    ["filterKpi", "filterSeverity", "filterBatch", "filterReview", "filterDuration", "filterSort"].forEach(function (id) {
+      $(id).addEventListener("change", function () { state.page = 0; renderRows(); });
+    });
+    var searchTimer = null;
+    $("filterSearch").addEventListener("input", function () { clearTimeout(searchTimer); searchTimer = setTimeout(function () { state.page = 0; renderRows(); }, 120); });
+
+    $("player").addEventListener("timeupdate", function (event) {
+      if (state.clipEnd != null && event.target.currentTime >= state.clipEnd) { event.target.pause(); state.clipEnd = null; }
+    });
+    var bufferNotice = null;
+    $("player").addEventListener("waiting", function (event) {
+      clearTimeout(bufferNotice);
+      bufferNotice = setTimeout(function () {
+        if (!event.target.paused) setStatus("The audio source is responding slowly; the selected segment is still buffering…");
+      }, 1500);
+    });
+    $("player").addEventListener("playing", function () { clearTimeout(bufferNotice); });
+    $("player").addEventListener("stalled", function () { setStatus("The Google Drive stream paused unexpectedly. You can retry this row or choose another without reloading the app.", "error"); });
+    $("player").addEventListener("error", function () { setStatus("The selected audio segment could not be played by this browser.", "error"); });
+    window.addEventListener("beforeunload", function () {
+      abortAudioReads();
+      state.objectUrls.forEach(function (entry) { URL.revokeObjectURL(entry.url); });
+      state.clipUrls.forEach(function (entry) { URL.revokeObjectURL(entry.url); });
+    });
+
+    updateReview();
+  }());
+  </script>
+</body>
+</html>

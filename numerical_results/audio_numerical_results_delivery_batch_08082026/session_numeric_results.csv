@@ -1,4 +1,0 @@
-batch,delivery_date,session_id,language,iso,n_speakers,audio_duration_seconds,speaking_time_union_seconds,overlap_seconds,overlap_ratio,n_speech_segments,mean_deter,mean_deter_pct,deter_pass,channels_dnsmos_sig_below_3,minimum_dnsmos_sig,mean_dnsmos_sig,mean_dnsmos_bak,mean_dnsmos_ovrl,dnsmos_conversation_pass
-delivery_batch_08082026,08/08/2026,NV-GR-SS13-CONVO22,Greek,gr,7,1449.552,1366.57,311.41,0.227877,526,0.004218,0.42,True,0,3.128553,3.390177,3.934081,3.034701,True
-delivery_batch_08082026,08/08/2026,NV-GR-SS19-CONVO32,Greek,gr,7,2193.417,2110.81,954.31,0.452106,1749,0.01597,1.6,True,0,3.104699,3.376345,4.037858,3.086024,True
-delivery_batch_08082026,08/08/2026,NV-PT-SS19-CONVO41,Portuguese,pt,6,1956.693,1771.28,327.44,0.184861,872,0.015847,1.58,True,0,3.297773,3.381772,3.948634,3.045194,True

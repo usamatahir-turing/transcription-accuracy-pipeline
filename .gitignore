@@ -9,6 +9,12 @@ Conversations/
 riverside_raw/
 chsep_audio_qa/
 batch8and9review/
+numerical_results/
+
+# --- Audio quality mute pipeline (local workspace + queue/report CSVs) ---
+to_be_edited_for_audio_quality/
+to_be_edited_for_audio_quality.csv
+audio_quality_edits.csv
 
 # --- Generated reports ---
 reports/

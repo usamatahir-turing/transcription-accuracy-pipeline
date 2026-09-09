@@ -23,3 +23,15 @@ python -m conversation_structure_pipeline.overlap_calculation --conversation NV-
 Output: `Conversations/<batch>/<conversation>/overlap_ratio.json`
 
 Also runs as part of `run_pipeline.py` (after DetER, before WER). Use `--skip-overlap` to omit.
+
+## Mute failing DNSMOS / clipping regions
+
+Reads failing DNSMOS windows from any ``numerical_results/**/dnsmos/individual/*.jsonl``
+export (not only ``audio_numerical_results_*`` folders).
+
+```powershell
+python -m conversation_structure_pipeline.mute_failing_regions
+python -m conversation_structure_pipeline.mute_failing_regions --dry-run
+python -m conversation_structure_pipeline.mute_failing_regions --overwrite
+python -m conversation_structure_pipeline.mute_failing_regions --overwrite-row NV-AR-SS12-CONVO29,jaouad.m
+```

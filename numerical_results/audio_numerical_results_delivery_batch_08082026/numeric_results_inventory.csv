@@ -1,6 +1,0 @@
-filename,format,records,description
-numeric_results_inventory.csv,csv,1,Manifest of exported artifacts
-dnsmos/individual/shard*.sessions.jsonl,jsonl,1,Per-session DNSMOS P.835 results with channel and window detail
-dnsmos_p835_individual.json,json,3,Consolidated per-session DNSMOS export for the batch
-individual_channel_numeric_results.csv,csv,20,Joined per-channel DNSMOS and DetER metrics
-session_numeric_results.csv,csv,3,"Session-level overlap, DetER, and DNSMOS aggregates"
