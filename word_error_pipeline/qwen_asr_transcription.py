@@ -16,6 +16,8 @@ Key choices (see chat design):
   - We drive from the reference jsonl, not the seglst, to guarantee alignment.
   - Every slice with audio is transcribed, regardless of length. Only truly
     zero-length slices (end <= start) emit empty text without a model call.
+    Clips shorter than the Whisper mel frontend minimum (~25 ms) are zero-padded
+    before inference so STFT does not fail.
   - Turing GPUs (e.g. RTX 2070) use float16 (NOT bfloat16).
 
 Usage
@@ -36,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -57,6 +60,28 @@ LANG_NAME = {
     "EN": "English",
     "RU": "Russian"
 }
+
+
+# Qwen3-ASR uses Whisper's mel frontend (n_fft=400). Centered STFT pads
+# n_fft // 2 on each side, so waveforms must be at least n_fft samples long.
+_ASR_MIN_SAMPLES_16K = 400
+
+
+def min_asr_clip_samples(sr: int) -> int:
+    """Minimum clip length the Whisper feature extractor accepts at ``sr``."""
+    if sr <= 0:
+        raise ValueError(f"invalid sample rate: {sr}")
+    return max(_ASR_MIN_SAMPLES_16K, int(math.ceil(_ASR_MIN_SAMPLES_16K * sr / 16000)))
+
+
+def prepare_clip_for_asr(clip: np.ndarray, sr: int) -> np.ndarray:
+    """Zero-pad short clips so Qwen/Whisper STFT accepts them."""
+    need = min_asr_clip_samples(sr)
+    if clip.shape[0] >= need:
+        return clip
+    out = np.zeros((need,), dtype=np.float32)
+    out[: clip.shape[0]] = clip
+    return out
 
 
 def read_reference_rows(path: Path) -> list[dict]:
@@ -96,7 +121,7 @@ def transcribe_speaker(asr, audio, sr, rows, qwen_lang, batch_size) -> list[str]
         if clip.shape[0] == 0:
             continue  # zero-length slice -> stays ""
         pending_idx.append(i)
-        pending_clip.append(clip)
+        pending_clip.append(prepare_clip_for_asr(clip, sr))
 
     for b in range(0, len(pending_clip), batch_size):
         sub_idx = pending_idx[b : b + batch_size]
