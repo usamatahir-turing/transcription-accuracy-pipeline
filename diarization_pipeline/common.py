@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Literal
+
+import soundfile as sf
 
 DETER_CH_MAX = 0.10
 DEFAULT_COLLAR = 0.25
@@ -46,6 +49,35 @@ def sad_rttm_path(speaker_wav_or_seglst: Path) -> Path:
     """``SPK01.wav`` / ``daiki.m2@turing.com.seglst.json`` → ``…_sad.rttm``."""
     out = speaker_output_name(channel_id_from_path(speaker_wav_or_seglst))
     return speaker_wav_or_seglst.with_name(f"{out}{SAD_RTTM_SUFFIX}")
+
+
+def stereo_og_wav_path(wav_path: Path) -> Path:
+    """Backup path for a wav before converting multi-channel audio to mono."""
+    return wav_path.with_name(f"{wav_path.stem}_stereo_og{wav_path.suffix}")
+
+
+def ensure_mono_wav(wav_path: Path) -> bool:
+    """Convert a multi-channel speaker wav to mono mean downmix in place.
+
+    Creates ``{stem}_stereo_og.wav`` once before overwriting. Returns ``True`` when
+    the file was converted.
+    """
+    info = sf.info(str(wav_path))
+    if info.channels <= 1:
+        return False
+
+    data, sr = sf.read(str(wav_path), always_2d=True)
+    mono = data.mean(axis=1)
+    backup = stereo_og_wav_path(wav_path)
+    if not backup.is_file():
+        shutil.copy2(wav_path, backup)
+    subtype = info.subtype or "PCM_16"
+    sf.write(str(wav_path), mono, sr, subtype=subtype)
+    print(
+        f"    MONO {wav_path.name}: {info.channels}ch -> 1ch "
+        f"(backup {backup.name})",
+    )
+    return True
 
 
 def parse_rttm(rttm_path: Path) -> list[tuple[float, float]]:

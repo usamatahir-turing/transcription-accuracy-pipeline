@@ -23,6 +23,7 @@ from diarization_pipeline.common import (
     SAD_MODES,
     SadMode,
     channel_id_from_path,
+    ensure_mono_wav,
     merge_segments,
     sad_rttm_path,
     speaker_output_name,
@@ -198,6 +199,7 @@ def write_sad_rttm(
     mode: SadMode = "union",
     batch_size: int = 1,
 ) -> dict:
+    ensure_mono_wav(audio_path)
     stats = run_sad(audio_path, declared_sr, mode=mode, batch_size=batch_size)
     file_id = speaker_output_name(channel_id_from_path(audio_path))
     write_rttm(stats["segments"], out_path, file_id=file_id, speaker_label="speech")

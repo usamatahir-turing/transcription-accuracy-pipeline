@@ -867,13 +867,32 @@ def session_rows_done(state: dict, csv_rows: list[dict[str, str]]) -> bool:
     return all(entries.get(row_key(r["session_id"], r["channel"]), {}).get("status") == "done" for r in csv_rows)
 
 
-def restore_session_channels(session_dir: Path, csv_rows: list[dict[str, str]]) -> None:
+def restore_session_channels(
+    session_dir: Path,
+    csv_rows: list[dict[str, str]],
+    *,
+    channels: set[str] | None = None,
+) -> None:
+    """Restore edited files from ``*_og.*`` for selected CSV channels.
+
+    When ``channels`` is ``None``, every row in ``csv_rows`` is considered.
+    Missing ``_og`` backups are skipped (untouched channels keep current files).
+    """
     for row in csv_rows:
+        ch = row["channel"]
+        if channels is not None and ch not in channels:
+            continue
         files = resolve_channel_files(session_dir, row["channel"])
         paths = channel_paths_from_files(files)
         for key in ("seglst", "wav", "rttm"):
-            if paths[key].is_file():
-                restore_from_og(paths[key])
+            path = paths[key]
+            if not path.is_file():
+                continue
+            original = og_path(path)
+            if not original.is_file():
+                print(f"    skip restore {path.name}: no _og backup")
+                continue
+            shutil.copy2(original, path)
 
 
 def prepare_channel_files(files: ChannelFiles) -> None:
@@ -1171,9 +1190,24 @@ def main(argv: list[str] | None = None) -> int:
 
         session_dir = workspace / session_id
         print(f"  RUN  {session_id} ({len(session_rows)} channel(s))")
-        if force and not args.dry_run:
+        restore_channels: set[str] | None = None
+        if args.overwrite:
+            restore_channels = None
+        elif any(k in overwrite_rows for k in keys):
+            restore_channels = {
+                row["channel"]
+                for row in session_rows
+                if row_key(row["session_id"], row["channel"]) in overwrite_rows
+            }
+        if force and not args.dry_run and (
+            args.overwrite or (restore_channels is not None and restore_channels)
+        ):
             try:
-                restore_session_channels(session_dir, session_rows)
+                restore_session_channels(
+                    session_dir,
+                    session_rows,
+                    channels=restore_channels,
+                )
             except FileNotFoundError as exc:
                 print(f"  FAIL {session_id}: {exc}")
                 n_fail += 1
