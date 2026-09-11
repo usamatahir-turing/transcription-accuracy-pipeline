@@ -15,6 +15,7 @@ Usage
 -----
     python upload_audio_quality_edits_to_gecko_folder.py --dry-run
     python upload_audio_quality_edits_to_gecko_folder.py
+    python upload_audio_quality_edits_to_gecko_folder.py --conversation NV-PT-SS11-CONVO28
     python upload_audio_quality_edits_to_gecko_folder.py --folder-id 1D8is...
 """
 
@@ -194,6 +195,22 @@ def iter_workspace_sessions(workspace: Path) -> list[str]:
     )
 
 
+def resolve_sessions(workspace: Path, conversation: str | None) -> tuple[list[str], str | None]:
+    """Return session ids to upload, or an error message."""
+    if conversation is None:
+        sessions = iter_workspace_sessions(workspace)
+        if not sessions:
+            return [], f"No edited sessions found under {workspace} (*_og.wav)"
+        return sessions, None
+
+    session_dir = workspace / conversation
+    if not session_dir.is_dir():
+        return [], f"Session folder not found: {session_dir}"
+    if not edited_stems(session_dir):
+        return [], f"{conversation}: no edited speakers (*_og.wav) in {session_dir}"
+    return [conversation], None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -208,16 +225,22 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Gecko Drive parent folder ID (default: {DEFAULT_DRIVE_FOLDER_ID})",
     )
     parser.add_argument(
+        "--conversation",
+        default=None,
+        metavar="SESSION_ID",
+        help="only upload this session (default: all edited sessions in workspace)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print planned uploads without calling Drive",
     )
     args = parser.parse_args(argv)
 
-    sessions = iter_workspace_sessions(args.workspace)
-    if not sessions:
-        print(f"No edited sessions found under {args.workspace} (*_og.wav)")
-        return 0
+    sessions, err = resolve_sessions(args.workspace, args.conversation)
+    if err:
+        print(f"ERROR: {err}")
+        return 1
 
     if args.dry_run:
         print(f"DRY-RUN uploading from {args.workspace} to Drive folder {args.folder_id}")
